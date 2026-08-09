@@ -1,0 +1,56 @@
+# CMake build directories
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+
+# In-source CMake artifacts
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/CTestTestfile.cmake
+/Makefile
+/Testing/
+/_deps/
+/install_manifest.txt
+/compile_commands.json
+/.cache/
+
+# Compiled C/C++ artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+*.out
+*.dSYM/
+
+# Test, coverage, and profiling output
+*.gcda
+*.gcno
+*.gcov
+coverage/
+Testing/
+
+# IDE and editor-local settings
+/.vscode/
+/.idea/
+/.vs/
+/.agents/
+/.codex/
+*.swp
+*.swo
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Local environment files
+.env
+.env.*
+!.env.example
