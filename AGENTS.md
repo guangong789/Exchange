@@ -25,7 +25,7 @@ CUDA is only used for offline/batched analytics.
 
 ## Rules
 
-- C++23
+- C++20
 - CMake
 - GoogleTest
 - Google Benchmark

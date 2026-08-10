@@ -48,5 +48,4 @@ namespace exchange {
         AskBook asks_;
         std::unordered_map<OrderId, OrderLocation> order_index_;
     };
-
 }  // namespace exchange

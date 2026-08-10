@@ -5,6 +5,7 @@ project(crypto_exchange_simulator VERSION 0.1.0 LANGUAGES CXX)
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 
 add_library(exchange_core
+    src/matching_engine.cpp
     src/order_book.cpp
 )
 add_library(exchange::core ALIAS exchange_core)
@@ -38,6 +39,7 @@ if(EXCHANGE_BUILD_TESTS)
     endif()
 
     add_executable(exchange_test
+        tests/event_system_test.cpp
         tests/order_book_test.cpp
     )
     target_link_libraries(exchange_test PRIVATE exchange::core GTest::gtest_main)
