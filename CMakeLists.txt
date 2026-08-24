@@ -3,10 +3,13 @@ cmake_minimum_required(VERSION 3.20)
 project(crypto_exchange_simulator VERSION 0.1.0 LANGUAGES CXX)
 
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
+option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 
 add_library(exchange_core
     src/matching_engine.cpp
     src/order_book.cpp
+    src/replay_engine.cpp
+    src/workload_generator.cpp
 )
 add_library(exchange::core ALIAS exchange_core)
 
@@ -20,6 +23,26 @@ if(MSVC)
     target_compile_options(exchange_core PRIVATE /W4 /permissive-)
 else()
     target_compile_options(exchange_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(EXCHANGE_BUILD_BENCHMARKS)
+    find_package(benchmark CONFIG REQUIRED)
+
+    add_executable(exchange_benchmark
+        benchmarks/exchange_benchmark.cpp
+    )
+    target_link_libraries(exchange_benchmark
+        PRIVATE
+            exchange::core
+            benchmark::benchmark
+    )
+    target_compile_features(exchange_benchmark PRIVATE cxx_std_20)
+
+    if(MSVC)
+        target_compile_options(exchange_benchmark PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(exchange_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 if(EXCHANGE_BUILD_TESTS)
@@ -41,6 +64,8 @@ if(EXCHANGE_BUILD_TESTS)
     add_executable(exchange_test
         tests/event_system_test.cpp
         tests/order_book_test.cpp
+        tests/replay_engine_test.cpp
+        tests/workload_generator_test.cpp
     )
     target_link_libraries(exchange_test PRIVATE exchange::core GTest::gtest_main)
     target_compile_features(exchange_test PRIVATE cxx_std_20)

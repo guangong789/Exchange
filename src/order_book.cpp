@@ -22,7 +22,7 @@ namespace exchange {
             throw std::invalid_argument("duplicate order id");
         }
 
-        std::vector<Trade> trades;
+        std::vector<Trade> trades;  // 交易数据
         if (order.side == Side::Buy) {
             match_buy(order, trades);
         } else {

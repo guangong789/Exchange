@@ -6,7 +6,7 @@ namespace exchange {
 
     std::vector<Trade> MatchingEngine::add_order(Order order) {
         const Order accepted_order = order;
-        auto trades = order_book_.add_order(order);  // phase 1
+        auto trades = order_book_.add_order(order);  // order book 交易数据
 
         event_collector_.publish(Event{EventPayload{OrderAccepted{accepted_order}}});
 

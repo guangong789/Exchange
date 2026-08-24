@@ -213,5 +213,5 @@ namespace exchange {
             EXPECT_FALSE(engine.cancel_order(999));
             EXPECT_TRUE(collector.empty());
         }
-    }  // namespace
-}  // namespace exchange
+    }
+}

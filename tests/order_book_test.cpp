@@ -183,5 +183,5 @@ namespace exchange {
                         std::invalid_argument);
             EXPECT_EQ(book.order_count(), 1U);
         }
-    }  // namespace
-}  // namespace exchange
+    }
+}
