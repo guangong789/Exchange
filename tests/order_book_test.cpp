@@ -159,6 +159,50 @@ namespace exchange {
             EXPECT_EQ(trades[1].sell_order_id, 3U);
         }
 
+        TEST(OrderBookTest, DetailedCancelReturnsCancelledOrder) {
+            OrderBook book;
+            const Order order = limit_order(1, Side::Buy, 101, 7, 42);
+            add_resting(book, order);
+
+            const auto cancelled = book.cancel_order_with_result(1);
+
+            ASSERT_TRUE(cancelled.has_value());
+            EXPECT_EQ(cancelled->id, order.id);
+            EXPECT_EQ(cancelled->side, order.side);
+            EXPECT_EQ(cancelled->type, order.type);
+            EXPECT_EQ(cancelled->price, order.price);
+            EXPECT_EQ(cancelled->quantity, order.quantity);
+            EXPECT_EQ(cancelled->timestamp, order.timestamp);
+            EXPECT_EQ(book.order_count(), 0U);
+        }
+
+        TEST(OrderBookTest, DetailedCancelReturnsPartiallyFilledRemainder) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 100, 10, 20));
+            ASSERT_EQ(book.add_order(limit_order(2, Side::Buy, 100, 4)).size(),
+                      1U);
+
+            const auto cancelled = book.cancel_order_with_result(1);
+
+            ASSERT_TRUE(cancelled.has_value());
+            EXPECT_EQ(cancelled->id, 1U);
+            EXPECT_EQ(cancelled->quantity, 6);
+            EXPECT_EQ(cancelled->timestamp, 20);
+            EXPECT_EQ(book.order_count(), 0U);
+        }
+
+        TEST(OrderBookTest, FailedDetailedCancelReturnsNoOrderAndPreservesState) {
+            OrderBook book;
+            const Order order = limit_order(1, Side::Buy, 100, 3);
+            add_resting(book, order);
+
+            EXPECT_FALSE(book.cancel_order_with_result(999).has_value());
+            EXPECT_EQ(book.order_count(), 1U);
+            ASSERT_TRUE(book.find_order(1).has_value());
+            EXPECT_EQ(book.find_order(1)->quantity, order.quantity);
+            EXPECT_EQ(book.best_bid(), order.price);
+        }
+
         TEST(OrderBookTest, RejectsInvalidOrdersWithoutChangingBook) {
             OrderBook book;
 

@@ -6,6 +6,10 @@
 #include <utility>
 
 namespace exchange {
+    void OrderBook::reserve_order_capacity(std::size_t capacity) {
+        order_index_.reserve(capacity);
+    }
+
     std::vector<Trade> OrderBook::add_order(Order order) {
         auto result = execute_order(order);
         return std::move(result.trades);
@@ -111,6 +115,21 @@ namespace exchange {
     }
 
     bool OrderBook::cancel_order(OrderId order_id) {
+        return cancel_order_impl(order_id, nullptr);
+    }
+
+    std::optional<Order> OrderBook::cancel_order_with_result(
+        OrderId order_id) {
+        std::optional<Order> cancelled_order;
+        if (!cancel_order_impl(order_id, &cancelled_order)) {
+            return std::nullopt;
+        }
+        return cancelled_order;
+    }
+
+    bool OrderBook::cancel_order_impl(
+        OrderId order_id,
+        std::optional<Order>* cancelled_order) {
         const auto location = order_index_.find(order_id);
         if (location == order_index_.end()) {
             return false;
@@ -119,6 +138,9 @@ namespace exchange {
         const Side side = location->second.side;
         const Price price = location->second.price;
         const auto order = location->second.iterator;
+        if (cancelled_order != nullptr) {
+            cancelled_order->emplace(*order);
+        }
 
         if (side == Side::Buy) {
             auto level = bids_.find(price);

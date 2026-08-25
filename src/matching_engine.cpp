@@ -7,6 +7,10 @@ namespace exchange {
     MatchingEngine::MatchingEngine(EventCollector& event_collector) noexcept
         : event_collector_(event_collector) {}
 
+    void MatchingEngine::reserve_order_capacity(std::size_t capacity) {
+        order_book_.reserve_order_capacity(capacity);
+    }
+
     std::vector<Trade> MatchingEngine::add_order(Order order) {
         const Order accepted_order = order;
         auto result = order_book_.add_order_with_execution_result(order);
@@ -39,13 +43,15 @@ namespace exchange {
     }
 
     bool MatchingEngine::cancel_order(OrderId order_id) {
-        const auto order = order_book_.find_order(order_id);
-        const bool cancelled = order_book_.cancel_order(order_id);
-
-        if (cancelled && order.has_value()) {
-            event_collector_.publish(Event{EventPayload{OrderCancelled{*order}}});
+        const auto cancelled_order =
+            order_book_.cancel_order_with_result(order_id);
+        if (!cancelled_order.has_value()) {
+            return false;
         }
-        return cancelled;
+
+        event_collector_.publish(
+            Event{EventPayload{OrderCancelled{*cancelled_order}}});
+        return true;
     }
 
     const OrderBook& MatchingEngine::order_book() const noexcept {

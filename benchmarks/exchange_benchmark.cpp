@@ -1,5 +1,6 @@
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -25,6 +26,7 @@ namespace exchange {
             std::size_t add_count{};
             std::size_t trade_count{};
             std::size_t event_count{};
+            std::size_t peak_active_order_count{};
         };
 
         WorkloadConfig workload_config(std::size_t command_count) {
@@ -53,14 +55,18 @@ namespace exchange {
                     ++workload.add_count;
                     workload.trade_count +=
                         order_book.add_order(add_order->order).size();
-                    continue;
+                } else {
+                    const auto& cancel_order =
+                        std::get<CancelOrder>(command.payload);
+                    if (!order_book.cancel_order(cancel_order.order_id)) {
+                        throw std::logic_error(
+                            "generated benchmark cancellation target is not active");
+                    }
                 }
 
-                const auto& cancel_order = std::get<CancelOrder>(command.payload);
-                if (!order_book.cancel_order(cancel_order.order_id)) {
-                    throw std::logic_error(
-                        "generated benchmark cancellation target is not active");
-                }
+                workload.peak_active_order_count = std::max(
+                    workload.peak_active_order_count,
+                    order_book.order_count());
             }
 
             workload.event_count =
@@ -111,6 +117,8 @@ namespace exchange {
                 static_cast<void>(_);
                 state.PauseTiming();
                 order_book.emplace();
+                order_book->reserve_order_capacity(
+                    workload.peak_active_order_count);
                 state.ResumeTiming();
 
                 for (const Command& command : workload.commands) {
@@ -147,6 +155,8 @@ namespace exchange {
                 event_collector.emplace();
                 event_collector->reserve(workload.event_count);
                 matching_engine.emplace(*event_collector);
+                matching_engine->reserve_order_capacity(
+                    workload.peak_active_order_count);
                 replay_engine.emplace(*matching_engine);
                 state.ResumeTiming();
 

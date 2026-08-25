@@ -25,11 +25,15 @@ namespace exchange {
         OrderBook(OrderBook&&) = delete;
         OrderBook& operator=(OrderBook&&) = delete;
 
+        void reserve_order_capacity(std::size_t capacity);
+
         [[nodiscard]] std::vector<Trade> add_order(Order order);
         [[nodiscard]] AddOrderExecutionResult add_order_with_execution_result(
             Order order);
 
         [[nodiscard]] bool cancel_order(OrderId order_id);
+        [[nodiscard]] std::optional<Order> cancel_order_with_result(
+            OrderId order_id);
 
         [[nodiscard]] std::optional<Price> best_bid() const noexcept;
         [[nodiscard]] std::optional<Price> best_ask() const noexcept;
@@ -48,6 +52,9 @@ namespace exchange {
         };
 
         void rest_order(Order order);
+        [[nodiscard]] bool cancel_order_impl(
+            OrderId order_id,
+            std::optional<Order>* cancelled_order);
         [[nodiscard]] AddOrderExecutionResult execute_order(Order order);
         void match_buy(Order& incoming, AddOrderExecutionResult& result);
         void match_sell(Order& incoming, AddOrderExecutionResult& result);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include "exchange/event_collector.hpp"
@@ -14,6 +15,8 @@ namespace exchange {
         MatchingEngine& operator=(const MatchingEngine&) = delete;
         MatchingEngine(MatchingEngine&&) = delete;
         MatchingEngine& operator=(MatchingEngine&&) = delete;
+
+        void reserve_order_capacity(std::size_t capacity);
 
         [[nodiscard]] std::vector<Trade> add_order(Order order);
         [[nodiscard]] bool cancel_order(OrderId order_id);
