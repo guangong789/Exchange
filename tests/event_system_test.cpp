@@ -32,6 +32,10 @@ namespace exchange {
         TEST(EventCollectorTest, StoresEventsInPublicationOrderAndCanClear) {
             EventCollector collector;
             const Order order = limit_order(1, Side::Buy, 100, 5, 10);
+            constexpr std::size_t reserved_capacity = 8;
+
+            collector.reserve(reserved_capacity);
+            EXPECT_GE(collector.events().capacity(), reserved_capacity);
 
             collector.publish(Event{EventPayload{OrderAccepted{order}}});
             collector.publish(Event{EventPayload{OrderCancelled{order}}});
@@ -158,6 +162,28 @@ namespace exchange {
                     (OrderFilled{4, Side::Buy, 4}));
         }
 
+        TEST(MatchingEngineEventTest, MultiFillFinalMakerCanRemainPartiallyFilled) {
+            EventCollector collector;
+            MatchingEngine engine(collector);
+            ASSERT_TRUE(engine.add_order(limit_order(1, Side::Sell, 100, 2)).empty());
+            ASSERT_TRUE(engine.add_order(limit_order(2, Side::Sell, 101, 10)).empty());
+            collector.clear();
+
+            const auto trades =
+                engine.add_order(limit_order(3, Side::Buy, 101, 5));
+
+            ASSERT_EQ(trades.size(), 2U);
+            ASSERT_EQ(collector.size(), 7U);
+            EXPECT_EQ(payload_at<OrderFilled>(collector, 2),
+                    (OrderFilled{1, Side::Sell, 2}));
+            EXPECT_EQ(payload_at<OrderPartiallyFilled>(collector, 3),
+                    (OrderPartiallyFilled{3, Side::Buy, 2, 3}));
+            EXPECT_EQ(payload_at<OrderPartiallyFilled>(collector, 5),
+                    (OrderPartiallyFilled{2, Side::Sell, 3, 7}));
+            EXPECT_EQ(payload_at<OrderFilled>(collector, 6),
+                    (OrderFilled{3, Side::Buy, 3}));
+        }
+
         TEST(MatchingEngineEventTest, IncomingRemainderProducesPartialEventAndRests) {
             EventCollector collector;
             MatchingEngine engine(collector);
@@ -175,6 +201,30 @@ namespace exchange {
                     (OrderPartiallyFilled{2, Side::Buy, 3, 5}));
             ASSERT_TRUE(engine.order_book().find_order(2).has_value());
             EXPECT_EQ(engine.order_book().find_order(2)->quantity, 5);
+        }
+
+        TEST(MatchingEngineEventTest, TakerCanRemainAfterConsumingMultipleMakers) {
+            EventCollector collector;
+            MatchingEngine engine(collector);
+            ASSERT_TRUE(engine.add_order(limit_order(1, Side::Sell, 100, 2)).empty());
+            ASSERT_TRUE(engine.add_order(limit_order(2, Side::Sell, 101, 3)).empty());
+            collector.clear();
+
+            const auto trades =
+                engine.add_order(limit_order(3, Side::Buy, 101, 8));
+
+            ASSERT_EQ(trades.size(), 2U);
+            ASSERT_EQ(collector.size(), 7U);
+            EXPECT_EQ(payload_at<OrderFilled>(collector, 2),
+                    (OrderFilled{1, Side::Sell, 2}));
+            EXPECT_EQ(payload_at<OrderPartiallyFilled>(collector, 3),
+                    (OrderPartiallyFilled{3, Side::Buy, 2, 6}));
+            EXPECT_EQ(payload_at<OrderFilled>(collector, 5),
+                    (OrderFilled{2, Side::Sell, 3}));
+            EXPECT_EQ(payload_at<OrderPartiallyFilled>(collector, 6),
+                    (OrderPartiallyFilled{3, Side::Buy, 3, 3}));
+            ASSERT_TRUE(engine.order_book().find_order(3).has_value());
+            EXPECT_EQ(engine.order_book().find_order(3)->quantity, 3);
         }
 
         TEST(MatchingEngineEventTest, SuccessfulCancelEmitsRemainingOrderSnapshot) {

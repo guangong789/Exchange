@@ -3,9 +3,20 @@
 #include <algorithm>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 namespace exchange {
     std::vector<Trade> OrderBook::add_order(Order order) {
+        auto result = execute_order(order);
+        return std::move(result.trades);
+    }
+
+    AddOrderExecutionResult OrderBook::add_order_with_execution_result(
+        Order order) {
+        return execute_order(order);
+    }
+
+    AddOrderExecutionResult OrderBook::execute_order(Order order) {
         if (order.id == 0) {
             throw std::invalid_argument("order id must be non-zero");
         }
@@ -22,20 +33,21 @@ namespace exchange {
             throw std::invalid_argument("duplicate order id");
         }
 
-        std::vector<Trade> trades;  // 交易数据
+        AddOrderExecutionResult result;
         if (order.side == Side::Buy) {
-            match_buy(order, trades);
+            match_buy(order, result);
         } else {
-            match_sell(order, trades);
+            match_sell(order, result);
         }
 
         if (order.quantity > 0) {
             rest_order(order);
         }
-        return trades;
+        return result;
     }
 
-    void OrderBook::match_buy(Order& incoming, std::vector<Trade>& trades) {
+    void OrderBook::match_buy(Order& incoming,
+                              AddOrderExecutionResult& result) {
         while (incoming.quantity > 0 && !asks_.empty() && asks_.begin()->first <= incoming.price) {
             auto level = asks_.begin();
             auto& queue = level->second;
@@ -43,9 +55,10 @@ namespace exchange {
             while (incoming.quantity > 0 && !queue.empty()) {
                 Order& resting = queue.front();
                 const Quantity executed = std::min(incoming.quantity, resting.quantity);
-                trades.push_back(Trade{incoming.id, resting.id, resting.price, executed, incoming.timestamp});
+                result.trades.push_back(Trade{incoming.id, resting.id, resting.price, executed, incoming.timestamp});
                 incoming.quantity -= executed;
                 resting.quantity -= executed;
+                result.last_trade_maker_remaining_quantity = resting.quantity;
 
                 if (resting.quantity == 0) {
                     order_index_.erase(resting.id);
@@ -59,7 +72,8 @@ namespace exchange {
         }
     }
 
-    void OrderBook::match_sell(Order& incoming, std::vector<Trade>& trades) {
+    void OrderBook::match_sell(Order& incoming,
+                               AddOrderExecutionResult& result) {
         while (incoming.quantity > 0 && !bids_.empty() && bids_.begin()->first >= incoming.price) {
             auto level = bids_.begin();
             auto& queue = level->second;
@@ -67,9 +81,10 @@ namespace exchange {
             while (incoming.quantity > 0 && !queue.empty()) {
                 Order& resting = queue.front();
                 const Quantity executed = std::min(incoming.quantity, resting.quantity);
-                trades.push_back(Trade{resting.id, incoming.id, resting.price, executed, incoming.timestamp});
+                result.trades.push_back(Trade{resting.id, incoming.id, resting.price, executed, incoming.timestamp});
                 incoming.quantity -= executed;
                 resting.quantity -= executed;
+                result.last_trade_maker_remaining_quantity = resting.quantity;
 
                 if (resting.quantity == 0) {
                     order_index_.erase(resting.id);

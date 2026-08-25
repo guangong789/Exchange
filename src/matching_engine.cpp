@@ -1,24 +1,33 @@
 #include "exchange/matching_engine.hpp"
 
+#include <cstddef>
+#include <utility>
+
 namespace exchange {
     MatchingEngine::MatchingEngine(EventCollector& event_collector) noexcept
         : event_collector_(event_collector) {}
 
     std::vector<Trade> MatchingEngine::add_order(Order order) {
         const Order accepted_order = order;
-        auto trades = order_book_.add_order(order);  // order book 交易数据
+        auto result = order_book_.add_order_with_execution_result(order);
 
         event_collector_.publish(Event{EventPayload{OrderAccepted{accepted_order}}});
 
         Quantity taker_remaining = accepted_order.quantity;
-        for (const Trade& trade : trades) {
+        for (std::size_t trade_index = 0;
+             trade_index < result.trades.size();
+             ++trade_index) {
+            const Trade& trade = result.trades[trade_index];
             event_collector_.publish(Event{EventPayload{TradeCreated{trade}}});
 
             const bool taker_is_buy = accepted_order.side == Side::Buy;
             const OrderId maker_id = taker_is_buy ? trade.sell_order_id : trade.buy_order_id;
             const Side maker_side = taker_is_buy ? Side::Sell : Side::Buy;
-            const auto maker = order_book_.find_order(maker_id);
-            const Quantity maker_remaining = maker ? maker->quantity : 0;
+            const bool is_last_trade = trade_index + 1 == result.trades.size();
+            const Quantity maker_remaining =
+                is_last_trade
+                    ? result.last_trade_maker_remaining_quantity
+                    : 0;
 
             publish_fill_state(maker_id, maker_side, trade.quantity, maker_remaining);
 
@@ -26,7 +35,7 @@ namespace exchange {
             publish_fill_state(accepted_order.id, accepted_order.side, trade.quantity, taker_remaining);
         }
 
-        return trades;
+        return std::move(result.trades);
     }
 
     bool MatchingEngine::cancel_order(OrderId order_id) {

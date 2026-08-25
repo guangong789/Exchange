@@ -12,6 +12,11 @@
 #include "exchange/trade.hpp"
 
 namespace exchange {
+    struct AddOrderExecutionResult {
+        std::vector<Trade> trades;
+        Quantity last_trade_maker_remaining_quantity{};
+    };
+
     class OrderBook {
     public:
         OrderBook() = default;
@@ -21,6 +26,8 @@ namespace exchange {
         OrderBook& operator=(OrderBook&&) = delete;
 
         [[nodiscard]] std::vector<Trade> add_order(Order order);
+        [[nodiscard]] AddOrderExecutionResult add_order_with_execution_result(
+            Order order);
 
         [[nodiscard]] bool cancel_order(OrderId order_id);
 
@@ -41,8 +48,9 @@ namespace exchange {
         };
 
         void rest_order(Order order);
-        void match_buy(Order& incoming, std::vector<Trade>& trades);
-        void match_sell(Order& incoming, std::vector<Trade>& trades);
+        [[nodiscard]] AddOrderExecutionResult execute_order(Order order);
+        void match_buy(Order& incoming, AddOrderExecutionResult& result);
+        void match_sell(Order& incoming, AddOrderExecutionResult& result);
 
         BidBook bids_;
         AskBook asks_;

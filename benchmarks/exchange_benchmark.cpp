@@ -24,6 +24,7 @@ namespace exchange {
             std::vector<Command> commands;
             std::size_t add_count{};
             std::size_t trade_count{};
+            std::size_t event_count{};
         };
 
         WorkloadConfig workload_config(std::size_t command_count) {
@@ -61,6 +62,9 @@ namespace exchange {
                         "generated benchmark cancellation target is not active");
                 }
             }
+
+            workload.event_count =
+                workload.commands.size() + 3U * workload.trade_count;
 
             return workload;
         }
@@ -141,6 +145,7 @@ namespace exchange {
                 static_cast<void>(_);
                 state.PauseTiming();
                 event_collector.emplace();
+                event_collector->reserve(workload.event_count);
                 matching_engine.emplace(*event_collector);
                 replay_engine.emplace(*matching_engine);
                 state.ResumeTiming();
