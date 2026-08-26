@@ -25,6 +25,47 @@ else()
     target_compile_options(exchange_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(exchange_protocol
+    src/line_protocol.cpp
+)
+add_library(exchange::protocol ALIAS exchange_protocol)
+
+target_link_libraries(exchange_protocol PUBLIC exchange::core)
+target_compile_features(exchange_protocol PUBLIC cxx_std_20)
+target_include_directories(exchange_protocol
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+if(MSVC)
+    target_compile_options(exchange_protocol PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(exchange_protocol PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(exchange_gateway
+        src/epoll_server.cpp
+        src/tcp_gateway.cpp
+    )
+    add_library(exchange::gateway ALIAS exchange_gateway)
+
+    target_link_libraries(exchange_gateway PUBLIC exchange::protocol)
+    target_compile_features(exchange_gateway PUBLIC cxx_std_20)
+    target_include_directories(exchange_gateway
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_compile_options(exchange_gateway PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(exchange_server
+        apps/gateway_main.cpp
+    )
+    target_link_libraries(exchange_server PRIVATE exchange::gateway)
+    target_compile_features(exchange_server PRIVATE cxx_std_20)
+    target_compile_options(exchange_server PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(EXCHANGE_BUILD_BENCHMARKS)
     find_package(benchmark CONFIG REQUIRED)
 
@@ -61,13 +102,30 @@ if(EXCHANGE_BUILD_TESTS)
         FetchContent_MakeAvailable(googletest)
     endif()
 
-    add_executable(exchange_test
+    set(EXCHANGE_TEST_SOURCES
         tests/event_system_test.cpp
+        tests/line_protocol_test.cpp
         tests/order_book_test.cpp
         tests/replay_engine_test.cpp
         tests/workload_generator_test.cpp
     )
-    target_link_libraries(exchange_test PRIVATE exchange::core GTest::gtest_main)
+    if(TARGET exchange_gateway)
+        list(APPEND EXCHANGE_TEST_SOURCES
+            tests/epoll_server_test.cpp
+            tests/tcp_gateway_test.cpp
+        )
+    endif()
+
+    add_executable(exchange_test ${EXCHANGE_TEST_SOURCES})
+    target_link_libraries(exchange_test
+        PRIVATE
+            exchange::core
+            exchange::protocol
+            GTest::gtest_main
+    )
+    if(TARGET exchange_gateway)
+        target_link_libraries(exchange_test PRIVATE exchange::gateway)
+    endif()
     target_compile_features(exchange_test PRIVATE cxx_std_20)
 
     include(GoogleTest)
