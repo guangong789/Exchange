@@ -2,11 +2,15 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include <arpa/inet.h>
@@ -16,6 +20,17 @@
 #include <gtest/gtest.h>
 
 namespace exchange {
+    struct TcpGatewayTestAccess {
+        static bool enqueue_unexpected_protocol_error(TcpGateway& gateway) {
+            return gateway.command_queue_.try_push(
+                TcpGateway::CommandEnvelope{
+                    0,
+                    ProtocolError{
+                        static_cast<ProtocolErrorCode>(-1),
+                        0}});
+        }
+    };
+
     namespace {
         class GatewayClient {
         public:
@@ -44,6 +59,22 @@ namespace exchange {
                         std::generic_category(),
                         "test shutdown write");
                 }
+            }
+
+            void reset_with_rst() {
+                const linger reset_linger{1, 0};
+                if (::setsockopt(
+                        fd_,
+                        SOL_SOCKET,
+                        SO_LINGER,
+                        &reset_linger,
+                        sizeof(reset_linger)) == -1) {
+                    throw std::system_error(
+                        errno,
+                        std::generic_category(),
+                        "test setsockopt SO_LINGER");
+                }
+                reset();
             }
 
             void reset() noexcept {
@@ -154,16 +185,20 @@ namespace exchange {
             return received;
         }
 
+        GatewayClient connect_gateway_client(TcpGateway& gateway) {
+            const std::size_t expected_connections =
+                gateway.connection_count() + 1;
+            GatewayClient client = connect_gateway(gateway.local_port());
+            poll_gateway_until(gateway, [&] {
+                return gateway.connection_count() == expected_connections;
+            });
+            return client;
+        }
+
         class TcpGatewayTest : public ::testing::Test {
         protected:
             GatewayClient connect_client() {
-                const std::size_t expected_connections =
-                    gateway_.connection_count() + 1;
-                GatewayClient client = connect_gateway(gateway_.local_port());
-                poll_gateway_until(gateway_, [&] {
-                    return gateway_.connection_count() == expected_connections;
-                });
-                return client;
+                return connect_gateway_client(gateway_);
             }
 
             TcpGateway gateway_{0};
@@ -246,6 +281,24 @@ namespace exchange {
                 client.get(),
                 "OK 1\n"
                 "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n"
+                "OK 1\n"
+                "EVENT ORDER_CANCELLED 1 BUY 100 5 10\n");
+        }
+
+        TEST_F(TcpGatewayTest, MalformedCommandPreservesResponseOrder) {
+            const GatewayClient client = connect_client();
+            send_gateway_bytes(
+                client.get(),
+                "ADD 1 BUY 100 5 10\n"
+                "BROKEN\n"
+                "CANCEL 1\n");
+
+            receive_exact(
+                gateway_,
+                client.get(),
+                "OK 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n"
+                "ERR MALFORMED_COMMAND\n"
                 "OK 1\n"
                 "EVENT ORDER_CANCELLED 1 BUY 100 5 10\n");
         }
@@ -339,6 +392,146 @@ namespace exchange {
                 "EVENT TRADE_CREATED 2 1 100 5 20\n"
                 "EVENT ORDER_FILLED 1 SELL 5\n"
                 "EVENT ORDER_FILLED 2 BUY 5\n");
+        }
+
+        TEST(TcpGatewayBackpressureTest, FullResponseQueueResumesAfterIoDrain) {
+            using namespace std::chrono_literals;
+
+            TcpGateway gateway{0, 8, 1};
+            const GatewayClient client = connect_gateway_client(gateway);
+            send_gateway_bytes(
+                client.get(),
+                "ADD 10 BUY 90 1 10\n"
+                "ADD 11 BUY 89 1 11\n"
+                "ADD 12 BUY 88 1 12\n");
+
+            gateway.poll_once(100);
+            std::this_thread::sleep_for(25ms);
+
+            receive_exact(
+                gateway,
+                client.get(),
+                "OK 1\n"
+                "EVENT ORDER_ACCEPTED 10 BUY 90 1 10\n"
+                "OK 1\n"
+                "EVENT ORDER_ACCEPTED 11 BUY 89 1 11\n"
+                "OK 1\n"
+                "EVENT ORDER_ACCEPTED 12 BUY 88 1 12\n");
+        }
+
+        TEST(TcpGatewayBackpressureTest, FullCommandQueueClosesOnlyOffender) {
+            TcpGateway gateway{0, 1, 1};
+            const GatewayClient offending_client =
+                connect_gateway_client(gateway);
+            const GatewayClient healthy_client =
+                connect_gateway_client(gateway);
+
+            send_gateway_bytes(
+                offending_client.get(),
+                "BROKEN\n"
+                "BROKEN\n"
+                "BROKEN\n"
+                "BROKEN\n");
+            poll_gateway_until(gateway, [&] {
+                return gateway.connection_count() == 1;
+            });
+
+            std::string healthy_bytes;
+            EXPECT_FALSE(receive_available(
+                healthy_client.get(), healthy_bytes));
+            EXPECT_TRUE(healthy_bytes.empty());
+            EXPECT_EQ(gateway.connection_count(), 1);
+        }
+
+        TEST(TcpGatewayBackpressureTest,
+             DisconnectedClientResponsesAreNotRoutedToReplacement) {
+            using namespace std::chrono_literals;
+
+            TcpGateway gateway{0, 8, 1};
+            GatewayClient disconnected_client =
+                connect_gateway_client(gateway);
+            send_gateway_bytes(
+                disconnected_client.get(),
+                "BROKEN\nBROKEN\nBROKEN\n");
+            gateway.poll_once(100);
+            std::this_thread::sleep_for(25ms);
+
+            disconnected_client.reset_with_rst();
+            poll_gateway_until(gateway, [&] {
+                return gateway.connection_count() == 0;
+            });
+
+            const GatewayClient replacement_client =
+                connect_gateway_client(gateway);
+            send_gateway_bytes(
+                replacement_client.get(), "ADD 200 SELL 110 1 200\n");
+            receive_exact(
+                gateway,
+                replacement_client.get(),
+                "OK 1\n"
+                "EVENT ORDER_ACCEPTED 200 SELL 110 1 200\n");
+
+            std::string unexpected_response;
+            EXPECT_FALSE(receive_available(
+                replacement_client.get(), unexpected_response));
+            EXPECT_TRUE(unexpected_response.empty());
+        }
+
+        TEST(TcpGatewayLifecycleTest, RequestStopWakesBlockingRun) {
+            using namespace std::chrono_literals;
+
+            TcpGateway gateway{0};
+            auto runner = std::async(
+                std::launch::async,
+                [&] { gateway.run(); });
+
+            EXPECT_EQ(runner.wait_for(25ms), std::future_status::timeout);
+            gateway.request_stop();
+
+            ASSERT_EQ(runner.wait_for(1s), std::future_status::ready);
+            EXPECT_NO_THROW(runner.get());
+        }
+
+        TEST(TcpGatewayLifecycleTest,
+             RequestStopUnblocksWorkerWaitingOnFullResponseQueue) {
+            using namespace std::chrono_literals;
+
+            auto lifecycle = std::async(
+                std::launch::async,
+                [] {
+                    TcpGateway gateway{0, 8, 1};
+                    const GatewayClient client =
+                        connect_gateway_client(gateway);
+                    send_gateway_bytes(
+                        client.get(),
+                        "BROKEN\nBROKEN\nBROKEN\n");
+                    gateway.poll_once(100);
+                    std::this_thread::sleep_for(25ms);
+                    gateway.request_stop();
+                });
+
+            ASSERT_EQ(lifecycle.wait_for(1s), std::future_status::ready);
+            EXPECT_NO_THROW(lifecycle.get());
+        }
+
+        TEST(TcpGatewayLifecycleTest,
+             WorkerFailureIsRethrownFromRunInsteadOfTerminating) {
+            using namespace std::chrono_literals;
+
+            TcpGateway gateway{0};
+            ASSERT_TRUE(
+                TcpGatewayTestAccess::enqueue_unexpected_protocol_error(
+                    gateway));
+
+            auto runner = std::async(
+                std::launch::async,
+                [&] { gateway.run(); });
+            if (runner.wait_for(1s) != std::future_status::ready) {
+                gateway.request_stop();
+                FAIL() << "worker failure did not reach the I/O thread";
+            }
+
+            EXPECT_THROW(runner.get(), std::invalid_argument);
         }
     }  // namespace
 }  // namespace exchange

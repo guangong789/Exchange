@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -18,6 +20,8 @@
 
 namespace exchange {
     namespace {
+        static_assert(noexcept(std::declval<EpollServer&>().notify()));
+
         class ScopedFd {
         public:
             explicit ScopedFd(int fd) : fd_(fd) {}
@@ -56,6 +60,7 @@ namespace exchange {
         };
 
         struct ReceivedLine {
+            ConnectionId connection_id;
             int client_fd;
             std::string line;
         };
@@ -143,25 +148,138 @@ namespace exchange {
         }
 
         TEST(EpollServerTest, PortZeroReturnsActualBoundPort) {
-            EpollServer server(0, [](int, std::string_view) {});
+            EpollServer server(
+                0, [](ConnectionId, int, std::string_view) {});
 
             EXPECT_NE(server.local_port(), 0);
         }
 
         TEST(EpollServerTest, AcceptsOneClient) {
-            EpollServer server(0, [](int, std::string_view) {});
+            EpollServer server(
+                0, [](ConnectionId, int, std::string_view) {});
             const ScopedFd client = connect_client(server.local_port());
 
             poll_until(server, [&] { return server.connection_count() == 1; });
             EXPECT_EQ(server.connection_count(), 1);
         }
 
+        TEST(EpollServerTest, AssignsStableMonotonicallyIncreasingConnectionIds) {
+            std::vector<ReceivedLine> lines;
+            EpollServer server(
+                0,
+                [&](ConnectionId connection_id,
+                    int client_fd,
+                    std::string_view line) {
+                    lines.push_back(ReceivedLine{
+                        connection_id, client_fd, std::string{line}});
+                });
+
+            const ScopedFd first_client = connect_client(server.local_port());
+            poll_until(server, [&] { return server.connection_count() == 1; });
+            send_all(first_client.get(), "FIRST_ONE\n");
+            poll_until(server, [&] { return lines.size() == 1; });
+
+            const ScopedFd second_client = connect_client(server.local_port());
+            poll_until(server, [&] { return server.connection_count() == 2; });
+            send_all(second_client.get(), "SECOND\n");
+            poll_until(server, [&] { return lines.size() == 2; });
+
+            send_all(first_client.get(), "FIRST_TWO\n");
+            poll_until(server, [&] { return lines.size() == 3; });
+
+            EXPECT_NE(lines[0].connection_id, 0U);
+            EXPECT_LT(lines[0].connection_id, lines[1].connection_id);
+            EXPECT_EQ(lines[0].connection_id, lines[2].connection_id);
+            EXPECT_NE(lines[0].client_fd, lines[1].client_fd);
+            EXPECT_EQ(lines[0].client_fd, lines[2].client_fd);
+            EXPECT_EQ(lines[0].line, "FIRST_ONE");
+            EXPECT_EQ(lines[1].line, "SECOND");
+            EXPECT_EQ(lines[2].line, "FIRST_TWO");
+        }
+
+        TEST(EpollServerTest, DoesNotReuseConnectionIdAfterDisconnect) {
+            std::vector<ConnectionId> connection_ids;
+            EpollServer server(
+                0,
+                [&](ConnectionId connection_id, int, std::string_view) {
+                    connection_ids.push_back(connection_id);
+                });
+
+            ScopedFd first_client = connect_client(server.local_port());
+            poll_until(server, [&] { return server.connection_count() == 1; });
+            send_all(first_client.get(), "FIRST\n");
+            poll_until(server, [&] { return connection_ids.size() == 1; });
+            first_client.reset();
+            poll_until(server, [&] { return server.connection_count() == 0; });
+
+            const ScopedFd second_client = connect_client(server.local_port());
+            poll_until(server, [&] { return server.connection_count() == 1; });
+            send_all(second_client.get(), "SECOND\n");
+            poll_until(server, [&] { return connection_ids.size() == 2; });
+
+            EXPECT_LT(connection_ids[0], connection_ids[1]);
+        }
+
+        TEST(EpollServerTest, NotifyWakesBlockingPoll) {
+            using namespace std::chrono_literals;
+
+            EpollServer server(
+                0, [](ConnectionId, int, std::string_view) {});
+            auto poll = std::async(
+                std::launch::async,
+                [&] { server.poll_once(-1); });
+
+            EXPECT_EQ(poll.wait_for(25ms), std::future_status::timeout);
+            server.notify();
+
+            ASSERT_EQ(poll.wait_for(1s), std::future_status::ready);
+            EXPECT_NO_THROW(poll.get());
+        }
+
+        TEST(EpollServerTest, CoalescedNotificationsAreFullyDrained) {
+            using namespace std::chrono_literals;
+
+            EpollServer server(
+                0, [](ConnectionId, int, std::string_view) {});
+            server.notify();
+            server.notify();
+            server.notify();
+            server.poll_once(0);
+
+            auto poll = std::async(
+                std::launch::async,
+                [&] { server.poll_once(-1); });
+            EXPECT_EQ(poll.wait_for(25ms), std::future_status::timeout);
+
+            server.notify();
+            ASSERT_EQ(poll.wait_for(1s), std::future_status::ready);
+            EXPECT_NO_THROW(poll.get());
+        }
+
+        TEST(EpollServerTest, CoalescedNotificationsInvokeWakeHandlerOnce) {
+            int wake_count = 0;
+            EpollServer server(
+                0,
+                [](ConnectionId, int, std::string_view) {},
+                [&] { ++wake_count; });
+
+            server.notify();
+            server.notify();
+            server.notify();
+            server.poll_once(0);
+
+            EXPECT_EQ(wake_count, 1);
+        }
+
         TEST(EpollServerTest, DeliversOneCompleteLine) {
             std::vector<ReceivedLine> lines;
             EpollServer server(
                 0,
-                [&](int client_fd, std::string_view line) {
-                    lines.push_back(ReceivedLine{client_fd, std::string{line}});
+                [&](ConnectionId connection_id,
+                    int client_fd,
+                    std::string_view line) {
+                    lines.push_back(ReceivedLine{
+                        connection_id, client_fd, std::string{line}});
                 });
             const ScopedFd client = connect_client(server.local_port());
             poll_until(server, [&] { return server.connection_count() == 1; });
@@ -176,8 +294,11 @@ namespace exchange {
             std::vector<ReceivedLine> lines;
             EpollServer server(
                 0,
-                [&](int client_fd, std::string_view line) {
-                    lines.push_back(ReceivedLine{client_fd, std::string{line}});
+                [&](ConnectionId connection_id,
+                    int client_fd,
+                    std::string_view line) {
+                    lines.push_back(ReceivedLine{
+                        connection_id, client_fd, std::string{line}});
                 });
             const ScopedFd client = connect_client(server.local_port());
             poll_until(server, [&] { return server.connection_count() == 1; });
@@ -195,8 +316,11 @@ namespace exchange {
             std::vector<ReceivedLine> lines;
             EpollServer server(
                 0,
-                [&](int client_fd, std::string_view line) {
-                    lines.push_back(ReceivedLine{client_fd, std::string{line}});
+                [&](ConnectionId connection_id,
+                    int client_fd,
+                    std::string_view line) {
+                    lines.push_back(ReceivedLine{
+                        connection_id, client_fd, std::string{line}});
                 });
             const ScopedFd client = connect_client(server.local_port());
             poll_until(server, [&] { return server.connection_count() == 1; });
@@ -213,8 +337,11 @@ namespace exchange {
             std::vector<ReceivedLine> lines;
             EpollServer server(
                 0,
-                [&](int client_fd, std::string_view line) {
-                    lines.push_back(ReceivedLine{client_fd, std::string{line}});
+                [&](ConnectionId connection_id,
+                    int client_fd,
+                    std::string_view line) {
+                    lines.push_back(ReceivedLine{
+                        connection_id, client_fd, std::string{line}});
                 });
             const ScopedFd first_client = connect_client(server.local_port());
             const ScopedFd second_client = connect_client(server.local_port());
@@ -235,7 +362,7 @@ namespace exchange {
             std::vector<std::string> lines;
             EpollServer server(
                 0,
-                [&](int, std::string_view line) {
+                [&](ConnectionId, int, std::string_view line) {
                     lines.emplace_back(line);
                 });
             ScopedFd client = connect_client(server.local_port());
@@ -250,6 +377,61 @@ namespace exchange {
             EXPECT_EQ(server.connection_count(), 0);
         }
 
+        TEST(EpollServerTest, InFlightRequestDefersHalfCloseUntilCompletion) {
+            EpollServer* server_pointer = nullptr;
+            ConnectionId connection_id = 0;
+            bool request_marked = false;
+            EpollServer server(
+                0,
+                [&](ConnectionId id, int, std::string_view) {
+                    connection_id = id;
+                    request_marked =
+                        server_pointer->mark_request_in_flight(id);
+                });
+            server_pointer = &server;
+
+            const ScopedFd client = connect_client(server.local_port());
+            poll_until(server, [&] { return server.connection_count() == 1; });
+            send_all(client.get(), "ASYNC\n");
+            ASSERT_EQ(::shutdown(client.get(), SHUT_WR), 0);
+            poll_until(server, [&] { return request_marked; });
+
+            EXPECT_NE(connection_id, 0U);
+            EXPECT_EQ(server.connection_count(), 1);
+            ASSERT_TRUE(server.complete_request(connection_id));
+            EXPECT_EQ(server.connection_count(), 1);
+
+            server.poll_once(0);
+            EXPECT_EQ(server.connection_count(), 0);
+        }
+
+        TEST(EpollServerTest, CompleteRequestCanRunAfterOutputLimitRequestsClose) {
+            EpollServer* server_pointer = nullptr;
+            bool request_marked = false;
+            bool request_completed = false;
+            EpollServer server(
+                0,
+                [&](ConnectionId connection_id, int, std::string_view) {
+                    request_marked = server_pointer->mark_request_in_flight(
+                        connection_id);
+                    server_pointer->queue_write(
+                        connection_id,
+                        std::string(kMaxPendingOutputBytes, 'x'));
+                    server_pointer->queue_write(connection_id, "x");
+                    request_completed =
+                        server_pointer->complete_request(connection_id);
+                });
+            server_pointer = &server;
+
+            const ScopedFd client = connect_client(server.local_port());
+            poll_until(server, [&] { return server.connection_count() == 1; });
+            send_all(client.get(), "OVERFLOW\n");
+            poll_until(server, [&] { return server.connection_count() == 0; });
+
+            EXPECT_TRUE(request_marked);
+            EXPECT_TRUE(request_completed);
+        }
+
         TEST(EpollServerTest, PreservesPendingBytesAcrossPartialWrites) {
             const std::string payload(kMaxPendingOutputBytes, 'x');
             EpollServer* server_pointer = nullptr;
@@ -257,7 +439,9 @@ namespace exchange {
             bool response_queued = false;
             EpollServer server(
                 0,
-                [&](int client_fd, std::string_view) {
+                [&](ConnectionId connection_id,
+                    int client_fd,
+                    std::string_view) {
                     const int small_send_buffer = 1024;
                     if (::setsockopt(
                             client_fd,
@@ -272,7 +456,7 @@ namespace exchange {
                     }
 
                     server_client_fd = client_fd;
-                    server_pointer->queue_write(client_fd, payload);
+                    server_pointer->queue_write(connection_id, payload);
                     response_queued = true;
                 });
             server_pointer = &server;
@@ -315,15 +499,17 @@ namespace exchange {
             int skipped_line_count = 0;
             EpollServer server(
                 0,
-                [&](int client_fd, std::string_view line) {
+                [&](ConnectionId connection_id,
+                    int,
+                    std::string_view line) {
                     if (line == "FILL_LIMIT") {
                         server_pointer->queue_write(
-                            client_fd,
+                            connection_id,
                             std::string(kMaxPendingOutputBytes, 'x'));
                         return;
                     }
                     if (line == "OVERFLOW") {
-                        server_pointer->queue_write(client_fd, "x");
+                        server_pointer->queue_write(connection_id, "x");
                         return;
                     }
                     if (line == "SHOULD_NOT_RUN") {
@@ -331,7 +517,8 @@ namespace exchange {
                         return;
                     }
                     if (line == "HEALTHY") {
-                        server_pointer->queue_write(client_fd, "HEALTHY\n");
+                        server_pointer->queue_write(
+                            connection_id, "HEALTHY\n");
                     }
                 });
             server_pointer = &server;

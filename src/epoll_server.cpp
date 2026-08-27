@@ -3,12 +3,14 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
 
 #include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -18,8 +20,12 @@ namespace exchange {
         constexpr std::size_t kReadBufferSize = 4096;
     }  // namespace
 
-    EpollServer::EpollServer(std::uint16_t port, LineHandler line_handler)
-        : line_handler_(std::move(line_handler)) {
+    EpollServer::EpollServer(
+        std::uint16_t port,
+        LineHandler line_handler,
+        WakeHandler wake_handler)
+        : line_handler_(std::move(line_handler)),
+          wake_handler_(std::move(wake_handler)) {
         if (!line_handler_) {
             throw std::invalid_argument("line handler must not be empty");
         }
@@ -88,7 +94,28 @@ namespace exchange {
                     std::generic_category(),
                     "epoll_ctl add listening socket");
             }
+
+            event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+            if (event_fd_ == -1) {
+                throw std::system_error(
+                    errno, std::generic_category(), "eventfd");
+            }
+
+            event = {};
+            event.events = EPOLLIN;
+            event.data.fd = event_fd_;
+            if (::epoll_ctl(
+                    epoll_fd_, EPOLL_CTL_ADD, event_fd_, &event) == -1) {
+                throw std::system_error(
+                    errno,
+                    std::generic_category(),
+                    "epoll_ctl add eventfd");
+            }
         } catch (...) {
+            if (event_fd_ != -1) {
+                ::close(event_fd_);
+                event_fd_ = -1;
+            }
             if (epoll_fd_ != -1) {
                 ::close(epoll_fd_);
                 epoll_fd_ = -1;
@@ -106,9 +133,13 @@ namespace exchange {
             ::close(entry.first);
         }
         connections_.clear();
+        connection_fds_.clear();
 
         if (listen_fd_ != -1) {
             ::close(listen_fd_);
+        }
+        if (event_fd_ != -1) {
+            ::close(event_fd_);
         }
         if (epoll_fd_ != -1) {
             ::close(epoll_fd_);
@@ -125,6 +156,8 @@ namespace exchange {
         if (timeout_ms < -1) {
             throw std::invalid_argument("epoll timeout must be -1 or non-negative");
         }
+
+        cleanup_deferred_connections();
 
         std::array<epoll_event, kMaxEventsPerPoll> events{};
         int ready_count = -1;
@@ -172,6 +205,22 @@ namespace exchange {
                 continue;
             }
 
+            if (fd == event_fd_) {
+                if ((flags & (EPOLLERR | EPOLLHUP)) != 0U) {
+                    throw std::system_error(
+                        EIO,
+                        std::generic_category(),
+                        "eventfd epoll error");
+                }
+                if ((flags & EPOLLIN) != 0U) {
+                    drain_wakeup();
+                    if (wake_handler_) {
+                        wake_handler_();
+                    }
+                }
+                continue;
+            }
+
             const auto connection = connections_.find(fd);
             if (connection == connections_.end()) {
                 continue;
@@ -203,10 +252,10 @@ namespace exchange {
             }
 
             if (state.read_closed) {
-                if (has_pending_output(state)) {
-                    update_interest(state);
-                } else {
+                if (ready_for_graceful_close(state)) {
                     close_connection(fd);
+                } else {
+                    update_interest(state);
                 }
                 continue;
             }
@@ -216,37 +265,99 @@ namespace exchange {
                 update_interest(state);
             }
         }
+
+        cleanup_deferred_connections();
     }
 
-    void EpollServer::queue_write(int client_fd, std::string response) {
-        const auto connection = connections_.find(client_fd);
-        if (connection == connections_.end() || response.empty()) {
+    void EpollServer::queue_write(
+        ConnectionId connection_id,
+        std::string response) {
+        ConnectionState* const state = find_connection(connection_id);
+        if (state == nullptr || response.empty()) {
             return;
         }
 
-        ConnectionState& state = connection->second;
-        if (state.close_requested) {
+        if (state->close_requested) {
             return;
         }
 
         const std::size_t pending_bytes =
-            state.write_buffer.size() - state.write_offset;
+            state->write_buffer.size() - state->write_offset;
         if (response.size() > kMaxPendingOutputBytes - pending_bytes) {
-            state.write_buffer.clear();
-            state.write_offset = 0;
-            state.close_requested = true;
+            state->write_buffer.clear();
+            state->write_offset = 0;
+            request_close(*state);
             return;
         }
 
         const bool was_empty = pending_bytes == 0;
-        if (state.write_offset != 0) {
-            state.write_buffer.erase(0, state.write_offset);
-            state.write_offset = 0;
+        if (state->write_offset != 0) {
+            state->write_buffer.erase(0, state->write_offset);
+            state->write_offset = 0;
         }
-        state.write_buffer.append(response);
+        state->write_buffer.append(response);
 
         if (was_empty) {
-            update_interest(state);
+            update_interest(*state);
+        }
+    }
+
+    bool EpollServer::mark_request_in_flight(ConnectionId connection_id) {
+        ConnectionState* const connection = find_connection(connection_id);
+        if (connection == nullptr || connection->close_requested) {
+            return false;
+        }
+        if (connection->in_flight_requests ==
+            std::numeric_limits<std::size_t>::max()) {
+            throw std::overflow_error("in-flight request count overflow");
+        }
+
+        ++connection->in_flight_requests;
+        return true;
+    }
+
+    bool EpollServer::complete_request(ConnectionId connection_id) {
+        ConnectionState* const connection = find_connection(connection_id);
+        if (connection == nullptr) {
+            return false;
+        }
+        if (connection->in_flight_requests == 0) {
+            throw std::logic_error("no in-flight request to complete");
+        }
+
+        --connection->in_flight_requests;
+        if (ready_for_graceful_close(*connection)) {
+            request_close(*connection);
+        }
+        return true;
+    }
+
+    bool EpollServer::request_close(ConnectionId connection_id) {
+        ConnectionState* const connection = find_connection(connection_id);
+        if (connection == nullptr) {
+            return false;
+        }
+
+        request_close(*connection);
+        return true;
+    }
+
+    void EpollServer::notify() noexcept {
+        const std::uint64_t increment = 1;
+        while (true) {
+            const ssize_t bytes_written =
+                ::write(event_fd_, &increment, sizeof(increment));
+            if (bytes_written == static_cast<ssize_t>(sizeof(increment))) {
+                return;
+            }
+            if (bytes_written == -1 && errno == EINTR) {
+                continue;
+            }
+            if (bytes_written == -1 &&
+                (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return;
+            }
+            return;
         }
     }
 
@@ -279,6 +390,19 @@ namespace exchange {
                     errno, std::generic_category(), "accept4");
             }
 
+            if (next_connection_id_ == 0) {
+                ::close(client_fd);
+                continue;
+            }
+
+            const ConnectionId connection_id = next_connection_id_;
+            if (next_connection_id_ ==
+                std::numeric_limits<ConnectionId>::max()) {
+                next_connection_id_ = 0;
+            } else {
+                ++next_connection_id_;
+            }
+
             epoll_event event{};
             event.events = EPOLLIN | EPOLLRDHUP;
             event.data.fd = client_fd;
@@ -297,14 +421,28 @@ namespace exchange {
                     client_fd,
                     ConnectionState{
                         client_fd,
+                        connection_id,
                         LineFramer{},
                         {},
                         0,
+                        0,
                         false,
                         false});
-                static_cast<void>(connection);
                 if (!inserted) {
                     throw std::logic_error("accepted duplicate client fd");
+                }
+
+                try {
+                    const auto [id_entry, id_inserted] =
+                        connection_fds_.emplace(connection_id, client_fd);
+                    static_cast<void>(id_entry);
+                    if (!id_inserted) {
+                        throw std::logic_error(
+                            "accepted duplicate connection id");
+                    }
+                } catch (...) {
+                    connections_.erase(connection);
+                    throw;
                 }
             } catch (...) {
                 ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
@@ -330,11 +468,11 @@ namespace exchange {
                         break;
                     }
                     if (frame.status == LineFrameStatus::LineTooLong) {
-                        connection.close_requested = true;
+                        request_close(connection);
                         return;
                     }
 
-                    line_handler_(connection.fd, frame.line);
+                    line_handler_(connection.id, connection.fd, frame.line);
                     if (connection.close_requested) {
                         return;
                     }
@@ -352,7 +490,7 @@ namespace exchange {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return;
             }
-            connection.close_requested = true;
+            request_close(connection);
             return;
         }
     }
@@ -382,7 +520,7 @@ namespace exchange {
                 return;
             }
 
-            connection.close_requested = true;
+            request_close(connection);
             return;
         }
 
@@ -409,9 +547,72 @@ namespace exchange {
         }
     }
 
+    void EpollServer::drain_wakeup() {
+        std::uint64_t value = 0;
+        while (true) {
+            const ssize_t bytes_read =
+                ::read(event_fd_, &value, sizeof(value));
+            if (bytes_read == static_cast<ssize_t>(sizeof(value))) {
+                continue;
+            }
+            if (bytes_read == -1 && errno == EINTR) {
+                continue;
+            }
+            if (bytes_read == -1 && errno == EAGAIN) {
+                return;
+            }
+            throw std::system_error(
+                bytes_read == -1 ? errno : EIO,
+                std::generic_category(),
+                "eventfd read");
+        }
+    }
+
+    void EpollServer::request_close(ConnectionState& connection) {
+        if (connection.close_requested) {
+            return;
+        }
+        deferred_closes_.push_back(connection.id);
+        connection.close_requested = true;
+    }
+
+    void EpollServer::cleanup_deferred_connections() noexcept {
+        std::vector<ConnectionId> pending;
+        pending.swap(deferred_closes_);
+
+        for (const ConnectionId connection_id : pending) {
+            ConnectionState* const connection = find_connection(connection_id);
+            if (connection != nullptr && connection->close_requested) {
+                close_connection(connection->fd);
+            }
+        }
+    }
+
+    EpollServer::ConnectionState* EpollServer::find_connection(
+        ConnectionId connection_id) noexcept {
+        const auto fd = connection_fds_.find(connection_id);
+        if (fd == connection_fds_.end()) {
+            return nullptr;
+        }
+
+        const auto connection = connections_.find(fd->second);
+        if (connection == connections_.end() ||
+            connection->second.id != connection_id) {
+            return nullptr;
+        }
+        return &connection->second;
+    }
+
     bool EpollServer::has_pending_output(
         const ConnectionState& connection) noexcept {
         return connection.write_offset < connection.write_buffer.size();
+    }
+
+    bool EpollServer::ready_for_graceful_close(
+        const ConnectionState& connection) noexcept {
+        return connection.read_closed &&
+               connection.in_flight_requests == 0 &&
+               !has_pending_output(connection);
     }
 
     void EpollServer::close_connection(int fd) noexcept {
@@ -422,6 +623,7 @@ namespace exchange {
 
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         ::close(fd);
+        connection_fds_.erase(connection->second.id);
         connections_.erase(connection);
     }
 }  // namespace exchange

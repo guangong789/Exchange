@@ -5,6 +5,8 @@ project(crypto_exchange_simulator VERSION 0.1.0 LANGUAGES CXX)
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 
+find_package(Threads REQUIRED)
+
 add_library(exchange_core
     src/matching_engine.cpp
     src/order_book.cpp
@@ -50,7 +52,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     add_library(exchange::gateway ALIAS exchange_gateway)
 
-    target_link_libraries(exchange_gateway PUBLIC exchange::protocol)
+    target_link_libraries(exchange_gateway
+        PUBLIC exchange::protocol
+        PRIVATE Threads::Threads
+    )
     target_compile_features(exchange_gateway PUBLIC cxx_std_20)
     target_include_directories(exchange_gateway
         PUBLIC
@@ -103,6 +108,7 @@ if(EXCHANGE_BUILD_TESTS)
     endif()
 
     set(EXCHANGE_TEST_SOURCES
+        tests/bounded_queue_test.cpp
         tests/event_system_test.cpp
         tests/line_protocol_test.cpp
         tests/order_book_test.cpp
@@ -122,6 +128,7 @@ if(EXCHANGE_BUILD_TESTS)
             exchange::core
             exchange::protocol
             GTest::gtest_main
+            Threads::Threads
     )
     if(TARGET exchange_gateway)
         target_link_libraries(exchange_test PRIVATE exchange::gateway)
