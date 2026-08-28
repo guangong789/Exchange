@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(crypto_exchange_simulator VERSION 0.1.0 LANGUAGES CXX)
+project(crypto_exchange_simulator VERSION 1.0.0 LANGUAGES CXX)
 
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
@@ -88,6 +88,21 @@ if(EXCHANGE_BUILD_BENCHMARKS)
         target_compile_options(exchange_benchmark PRIVATE /W4 /permissive-)
     else()
         target_compile_options(exchange_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    if(TARGET exchange_gateway)
+        add_executable(exchange_gateway_benchmark
+            benchmarks/gateway_benchmark.cpp
+        )
+        target_link_libraries(exchange_gateway_benchmark
+            PRIVATE
+                exchange::gateway
+                Threads::Threads
+        )
+        target_compile_features(exchange_gateway_benchmark PRIVATE cxx_std_20)
+        target_compile_options(exchange_gateway_benchmark
+            PRIVATE -Wall -Wextra -Wpedantic
+        )
     endif()
 endif()
 

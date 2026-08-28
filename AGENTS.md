@@ -13,15 +13,24 @@ Never sacrifice correctness for speculative performance improvements.
 
 ## Architecture
 
-Latency-sensitive path:
+Current v1 request path:
 
-Order
--> Risk
+TCP Client
+-> epoll I/O and protocol parsing
+-> bounded command queue
+-> single matching thread
 -> MatchingEngine
 -> OrderBook
--> Event
+-> Event and response encoding
+-> bounded response queue
+-> epoll I/O
+-> TCP Client
 
-CUDA is only used for offline/batched analytics.
+Account, Risk, Ledger, Clearing, Settlement, Agent/MCP, and on-chain
+integration are future/deferred work and are not part of v1.
+
+CUDA is reserved for future offline/batched analytics and is not part of the
+v1 matching path.
 
 ## Rules
 
