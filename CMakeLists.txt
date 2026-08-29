@@ -8,8 +8,12 @@ option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 find_package(Threads REQUIRED)
 
 add_library(exchange_core
+    src/account_store.cpp
+    src/execution_coordinator.cpp
+    src/financial_conversion.cpp
     src/matching_engine.cpp
     src/order_book.cpp
+    src/order_reservation_store.cpp
     src/replay_engine.cpp
     src/workload_generator.cpp
 )
@@ -123,10 +127,15 @@ if(EXCHANGE_BUILD_TESTS)
     endif()
 
     set(EXCHANGE_TEST_SOURCES
+        tests/account_reservation_integration_test.cpp
+        tests/account_store_test.cpp
         tests/bounded_queue_test.cpp
+        tests/execution_coordinator_test.cpp
         tests/event_system_test.cpp
+        tests/financial_conversion_test.cpp
         tests/line_protocol_test.cpp
         tests/order_book_test.cpp
+        tests/order_reservation_store_test.cpp
         tests/replay_engine_test.cpp
         tests/workload_generator_test.cpp
     )

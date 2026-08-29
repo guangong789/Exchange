@@ -12,6 +12,14 @@
 #include "exchange/trade.hpp"
 
 namespace exchange {
+    struct MatchPreview {
+        OrderId maker_order_id{};
+        Price execution_price{};
+        Quantity execution_quantity{};
+
+        bool operator==(const MatchPreview&) const = default;
+    };
+
     struct AddOrderExecutionResult {
         std::vector<Trade> trades;
         Quantity last_trade_maker_remaining_quantity{};
@@ -30,6 +38,8 @@ namespace exchange {
         [[nodiscard]] std::vector<Trade> add_order(Order order);
         [[nodiscard]] AddOrderExecutionResult add_order_with_execution_result(
             Order order);
+        [[nodiscard]] std::vector<MatchPreview> preview_matches(
+            const Order& incoming) const;
 
         [[nodiscard]] bool cancel_order(OrderId order_id);
         [[nodiscard]] std::optional<Order> cancel_order_with_result(
@@ -51,6 +61,7 @@ namespace exchange {
             OrderQueue::iterator iterator;
         };
 
+        void validate_order(const Order& order) const;
         void rest_order(Order order);
         [[nodiscard]] bool cancel_order_impl(
             OrderId order_id,

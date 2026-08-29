@@ -15,6 +15,24 @@ namespace exchange {
             EXPECT_TRUE(book.add_order(order).empty());
         }
 
+        void expect_preview_trade_parity(
+            const std::vector<MatchPreview>& previews,
+            const std::vector<Trade>& trades,
+            Side incoming_side) {
+            ASSERT_EQ(previews.size(), trades.size());
+            for (std::size_t index = 0; index < previews.size(); ++index) {
+                const OrderId maker_order_id =
+                    incoming_side == Side::Buy
+                        ? trades[index].sell_order_id
+                        : trades[index].buy_order_id;
+                EXPECT_EQ(previews[index].maker_order_id, maker_order_id);
+                EXPECT_EQ(previews[index].execution_price,
+                          trades[index].price);
+                EXPECT_EQ(previews[index].execution_quantity,
+                          trades[index].quantity);
+            }
+        }
+
         TEST(OrderBookTest, StartsEmpty) {
             const OrderBook book;
 
@@ -226,6 +244,212 @@ namespace exchange {
             EXPECT_THROW(book.add_order(limit_order(1, Side::Sell, 101, 1)),
                         std::invalid_argument);
             EXPECT_EQ(book.order_count(), 1U);
+        }
+
+        TEST(OrderBookPreviewTest, EmptyBookHasNoMatches) {
+            const OrderBook book;
+
+            EXPECT_TRUE(
+                book.preview_matches(
+                        limit_order(1, Side::Buy, 100, 5))
+                    .empty());
+        }
+
+        TEST(OrderBookPreviewTest, NonCrossingBuyHasNoMatches) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 101, 3));
+
+            EXPECT_TRUE(
+                book.preview_matches(
+                        limit_order(2, Side::Buy, 100, 3))
+                    .empty());
+        }
+
+        TEST(OrderBookPreviewTest, NonCrossingSellHasNoMatches) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Buy, 99, 3));
+
+            EXPECT_TRUE(
+                book.preview_matches(
+                        limit_order(2, Side::Sell, 100, 3))
+                    .empty());
+        }
+
+        TEST(OrderBookPreviewTest, BuyCrossesOneAskAtMakerPrice) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 99, 3));
+
+            EXPECT_EQ(
+                book.preview_matches(
+                    limit_order(2, Side::Buy, 100, 2)),
+                (std::vector<MatchPreview>{{1, 99, 2}}));
+        }
+
+        TEST(OrderBookPreviewTest, SellCrossesOneBidAtMakerPrice) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Buy, 101, 3));
+
+            EXPECT_EQ(
+                book.preview_matches(
+                    limit_order(2, Side::Sell, 100, 2)),
+                (std::vector<MatchPreview>{{1, 101, 2}}));
+        }
+
+        TEST(OrderBookPreviewTest, BuyUsesPriceTimePriorityAcrossAskLevels) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 102, 2));
+            add_resting(book, limit_order(2, Side::Sell, 100, 1));
+            add_resting(book, limit_order(3, Side::Sell, 100, 2));
+            add_resting(book, limit_order(4, Side::Sell, 101, 1));
+
+            EXPECT_EQ(
+                book.preview_matches(
+                    limit_order(5, Side::Buy, 102, 5)),
+                (std::vector<MatchPreview>{
+                    {2, 100, 1},
+                    {3, 100, 2},
+                    {4, 101, 1},
+                    {1, 102, 1},
+                }));
+        }
+
+        TEST(OrderBookPreviewTest, SellUsesPriceTimePriorityAcrossBidLevels) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Buy, 100, 2));
+            add_resting(book, limit_order(2, Side::Buy, 102, 1));
+            add_resting(book, limit_order(3, Side::Buy, 102, 2));
+            add_resting(book, limit_order(4, Side::Buy, 101, 1));
+
+            EXPECT_EQ(
+                book.preview_matches(
+                    limit_order(5, Side::Sell, 100, 5)),
+                (std::vector<MatchPreview>{
+                    {2, 102, 1},
+                    {3, 102, 2},
+                    {4, 101, 1},
+                    {1, 100, 1},
+                }));
+        }
+
+        TEST(OrderBookPreviewTest, PreservesFifoAtTheSamePrice) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 100, 1, 50));
+            add_resting(book, limit_order(2, Side::Sell, 100, 1, 10));
+            add_resting(book, limit_order(3, Side::Sell, 100, 1, 30));
+
+            EXPECT_EQ(
+                book.preview_matches(
+                    limit_order(4, Side::Buy, 100, 3)),
+                (std::vector<MatchPreview>{
+                    {1, 100, 1},
+                    {2, 100, 1},
+                    {3, 100, 1},
+                }));
+        }
+
+        TEST(OrderBookPreviewTest, PartiallyConsumesFinalMakerWithoutMutation) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 100, 2));
+            add_resting(book, limit_order(2, Side::Sell, 101, 5));
+            const std::size_t order_count_before = book.order_count();
+
+            const auto first = book.preview_matches(
+                limit_order(3, Side::Buy, 101, 4));
+            const auto second = book.preview_matches(
+                limit_order(3, Side::Buy, 101, 4));
+
+            EXPECT_EQ(first,
+                      (std::vector<MatchPreview>{
+                          {1, 100, 2},
+                          {2, 101, 2},
+                      }));
+            EXPECT_EQ(second, first);
+            EXPECT_EQ(book.order_count(), order_count_before);
+            ASSERT_TRUE(book.find_order(1).has_value());
+            ASSERT_TRUE(book.find_order(2).has_value());
+            EXPECT_EQ(book.find_order(1)->quantity, 2);
+            EXPECT_EQ(book.find_order(2)->quantity, 5);
+        }
+
+        TEST(OrderBookPreviewTest, StopsWhenIncomingQuantityIsExhausted) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 100, 1));
+            add_resting(book, limit_order(2, Side::Sell, 101, 1));
+            add_resting(book, limit_order(3, Side::Sell, 102, 1));
+
+            EXPECT_EQ(
+                book.preview_matches(
+                    limit_order(4, Side::Buy, 102, 2)),
+                (std::vector<MatchPreview>{
+                    {1, 100, 1},
+                    {2, 101, 1},
+                }));
+        }
+
+        TEST(OrderBookPreviewTest, SharesExecuteOrderValidation) {
+            OrderBook preview_book;
+            OrderBook execution_book;
+            add_resting(preview_book, limit_order(50, Side::Buy, 90, 1));
+            add_resting(execution_book, limit_order(50, Side::Buy, 90, 1));
+            const std::vector<Order> invalid_orders{
+                limit_order(0, Side::Buy, 100, 1),
+                limit_order(1, Side::Buy, 0, 1),
+                limit_order(2, Side::Buy, -1, 1),
+                limit_order(3, Side::Buy, 100, 0),
+                limit_order(4, Side::Buy, 100, -1),
+                Order{5,
+                      Side::Buy,
+                      static_cast<OrderType>(99),
+                      100,
+                      1,
+                      0},
+                limit_order(50, Side::Sell, 100, 1),
+            };
+
+            for (const Order& order : invalid_orders) {
+                EXPECT_THROW(
+                    static_cast<void>(
+                        preview_book.preview_matches(order)),
+                    std::invalid_argument);
+                EXPECT_THROW(
+                    static_cast<void>(execution_book.add_order(order)),
+                    std::invalid_argument);
+            }
+
+            EXPECT_EQ(preview_book.order_count(), 1U);
+            EXPECT_EQ(execution_book.order_count(), 1U);
+        }
+
+        TEST(OrderBookPreviewParityTest, BuyPreviewMatchesActualTrades) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Sell, 101, 3));
+            add_resting(book, limit_order(2, Side::Sell, 100, 1));
+            add_resting(book, limit_order(3, Side::Sell, 100, 2));
+            add_resting(book, limit_order(4, Side::Sell, 102, 5));
+            const Order incoming = limit_order(5, Side::Buy, 102, 8, 77);
+
+            const auto previews = book.preview_matches(incoming);
+            const auto trades = book.add_order(incoming);
+
+            expect_preview_trade_parity(previews, trades, incoming.side);
+            ASSERT_EQ(previews.size(), 4U);
+            EXPECT_EQ(previews.back(), (MatchPreview{4, 102, 2}));
+        }
+
+        TEST(OrderBookPreviewParityTest, SellPreviewMatchesActualTrades) {
+            OrderBook book;
+            add_resting(book, limit_order(1, Side::Buy, 101, 3));
+            add_resting(book, limit_order(2, Side::Buy, 102, 1));
+            add_resting(book, limit_order(3, Side::Buy, 102, 2));
+            add_resting(book, limit_order(4, Side::Buy, 100, 5));
+            const Order incoming = limit_order(5, Side::Sell, 100, 8, 77);
+
+            const auto previews = book.preview_matches(incoming);
+            const auto trades = book.add_order(incoming);
+
+            expect_preview_trade_parity(previews, trades, incoming.side);
+            ASSERT_EQ(previews.size(), 4U);
+            EXPECT_EQ(previews.back(), (MatchPreview{4, 100, 2}));
         }
     }
 }

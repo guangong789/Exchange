@@ -20,7 +20,7 @@ namespace exchange {
         return execute_order(order);
     }
 
-    AddOrderExecutionResult OrderBook::execute_order(Order order) {
+    void OrderBook::validate_order(const Order& order) const {
         if (order.id == 0) {
             throw std::invalid_argument("order id must be non-zero");
         }
@@ -36,6 +36,60 @@ namespace exchange {
         if (order_index_.contains(order.id)) {
             throw std::invalid_argument("duplicate order id");
         }
+    }
+
+    std::vector<MatchPreview> OrderBook::preview_matches(
+        const Order& incoming) const {
+        validate_order(incoming);
+
+        std::vector<MatchPreview> previews;
+        Quantity remaining = incoming.quantity;
+
+        if (incoming.side == Side::Buy) {
+            for (const auto& [price, queue] : asks_) {
+                if (remaining == 0 || price > incoming.price) {
+                    break;
+                }
+                for (const Order& maker : queue) {
+                    const Quantity executed =
+                        std::min(remaining, maker.quantity);
+                    previews.push_back(MatchPreview{
+                        maker.id,
+                        maker.price,
+                        executed,
+                    });
+                    remaining -= executed;
+                    if (remaining == 0) {
+                        break;
+                    }
+                }
+            }
+            return previews;
+        }
+
+        for (const auto& [price, queue] : bids_) {
+            if (remaining == 0 || price < incoming.price) {
+                break;
+            }
+            for (const Order& maker : queue) {
+                const Quantity executed =
+                    std::min(remaining, maker.quantity);
+                previews.push_back(MatchPreview{
+                    maker.id,
+                    maker.price,
+                    executed,
+                });
+                remaining -= executed;
+                if (remaining == 0) {
+                    break;
+                }
+            }
+        }
+        return previews;
+    }
+
+    AddOrderExecutionResult OrderBook::execute_order(Order order) {
+        validate_order(order);
 
         AddOrderExecutionResult result;
         if (order.side == Side::Buy) {
