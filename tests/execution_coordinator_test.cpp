@@ -1,6 +1,7 @@
 #include "exchange/execution_coordinator.hpp"
 
 #include <array>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <variant>
@@ -35,18 +36,36 @@ namespace exchange {
             EXPECT_EQ(actual.timestamp, expected.timestamp);
         }
 
+        Amount total_asset(
+            const AccountStore& accounts,
+            AssetId asset_id,
+            std::initializer_list<AccountId> account_ids) {
+            Amount total = 0;
+            for (const AccountId account_id : account_ids) {
+                const auto balance = accounts.find_balance(
+                    account_id,
+                    asset_id);
+                if (balance.has_value()) {
+                    total += balance->available + balance->reserved;
+                }
+            }
+            return total;
+        }
+
         class ExecutionCoordinatorTest : public ::testing::Test {
         protected:
             AccountStore accounts;
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             ExecutionCoordinator coordinator{
                 test_instrument,
                 accounts,
                 reservations,
                 matching_engine,
-                events};
+                events,
+                ledger};
         };
 
         TEST_F(ExecutionCoordinatorTest, AcceptsNonCrossingBuyAndPreservesAcceptedEvent) {
@@ -70,6 +89,12 @@ namespace exchange {
             expect_order_eq(
                 std::get<OrderAccepted>(events.events().front().payload).order,
                 order);
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(
+                ledger.entries()[0],
+                (LedgerEntry{
+                    1,
+                    make_reserve_ledger_transaction(101, 1, 10, 300)}));
         }
 
         TEST_F(ExecutionCoordinatorTest, AcceptsNonCrossingSell) {
@@ -90,6 +115,10 @@ namespace exchange {
             ASSERT_EQ(events.size(), 1U);
             EXPECT_TRUE(std::holds_alternative<OrderAccepted>(
                 events.events().front().payload));
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(
+                ledger.entries()[0].transaction,
+                make_reserve_ledger_transaction(102, 1, 20, 4));
         }
 
         TEST(ExecutionCoordinatorInstrumentTest, RejectsInvalidInstrumentAtConstruction) {
@@ -97,6 +126,7 @@ namespace exchange {
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             const std::array<InstrumentContext, 9> invalid_instruments{
                 InstrumentContext{0, 10, 1, 1, 1},
                 InstrumentContext{20, 0, 1, 1, 1},
@@ -116,12 +146,14 @@ namespace exchange {
                         accounts,
                         reservations,
                         matching_engine,
-                        events}),
+                        events,
+                        ledger}),
                     std::invalid_argument);
             }
 
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST(ExecutionCoordinatorInstrumentTest, DerivesRationalBuyReservation) {
@@ -130,12 +162,14 @@ namespace exchange {
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             ExecutionCoordinator coordinator{
                 instrument,
                 accounts,
                 reservations,
                 matching_engine,
-                events};
+                events,
+                ledger};
             ASSERT_TRUE(accounts.create_account(1));
             accounts.fund(1, 10, 100);
 
@@ -156,12 +190,14 @@ namespace exchange {
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             ExecutionCoordinator coordinator{
                 instrument,
                 accounts,
                 reservations,
                 matching_engine,
-                events};
+                events,
+                ledger};
             ASSERT_TRUE(accounts.create_account(1));
             accounts.fund(1, 20, 4'000);
 
@@ -183,12 +219,14 @@ namespace exchange {
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             ExecutionCoordinator coordinator{
                 instrument,
                 accounts,
                 reservations,
                 matching_engine,
-                events};
+                events,
+                ledger};
             ASSERT_TRUE(accounts.create_account(1));
             accounts.fund(1, 10, 100);
             const auto balance_before = accounts.find_balance(1, 10);
@@ -204,6 +242,15 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(117).has_value());
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
+
+            EXPECT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(120, Side::Buy, 10, 2)}),
+                SubmitResult::Accepted);
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(ledger.entries()[0].sequence, 1U);
         }
 
         TEST(ExecutionCoordinatorInstrumentTest, ConversionOverflowLeavesStateUnchanged) {
@@ -212,12 +259,14 @@ namespace exchange {
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             ExecutionCoordinator coordinator{
                 instrument,
                 accounts,
                 reservations,
                 matching_engine,
-                events};
+                events,
+                ledger};
             ASSERT_TRUE(accounts.create_account(1));
             accounts.fund(1, 10, 100);
             const auto balance_before = accounts.find_balance(1, 10);
@@ -237,6 +286,7 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(118).has_value());
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, InsufficientFundsLeaveAllStateUnchanged) {
@@ -254,6 +304,27 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(103).has_value());
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
+        }
+
+        TEST_F(ExecutionCoordinatorTest, FailedSubmitConsumesNoLedgerSequence) {
+            ASSERT_TRUE(accounts.create_account(1));
+            accounts.fund(1, 10, 500);
+
+            EXPECT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(700, Side::Buy, 100, 6)}),
+                SubmitResult::InsufficientFunds);
+            EXPECT_TRUE(ledger.entries().empty());
+
+            EXPECT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(701, Side::Buy, 100, 1)}),
+                SubmitResult::Accepted);
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(ledger.entries()[0].sequence, 1U);
         }
 
         TEST_F(ExecutionCoordinatorTest, DuplicateReservationRollsBackNewFundsOnly) {
@@ -273,6 +344,7 @@ namespace exchange {
             EXPECT_EQ(reservations.find(104), record_before);
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, ConversionInputFailuresOccurBeforeMutation) {
@@ -298,6 +370,7 @@ namespace exchange {
                 EXPECT_FALSE(reservations.find(order.id).has_value());
                 EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
                 EXPECT_TRUE(events.empty());
+                EXPECT_TRUE(ledger.entries().empty());
             }
         }
 
@@ -324,6 +397,7 @@ namespace exchange {
                 EXPECT_FALSE(reservations.find(order.id).has_value());
                 EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
                 EXPECT_TRUE(events.empty());
+                EXPECT_TRUE(ledger.entries().empty());
             }
         }
 
@@ -348,6 +422,7 @@ namespace exchange {
             expect_order_eq(
                 *matching_engine.order_book().find_order(108), resting);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, CrossingBuyAgainstPureV1MakerIsRejectedWithoutMutation) {
@@ -369,6 +444,7 @@ namespace exchange {
             EXPECT_EQ(matching_engine.order_book().order_count(), 1U);
             EXPECT_FALSE(matching_engine.order_book().find_order(110).has_value());
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, CrossingSellAgainstPureV1MakerIsRejectedWithoutMutation) {
@@ -390,6 +466,7 @@ namespace exchange {
             EXPECT_EQ(matching_engine.order_book().order_count(), 1U);
             EXPECT_FALSE(matching_engine.order_book().find_order(112).has_value());
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, TwoAccountsAreAdmittedIndependently) {
@@ -431,18 +508,22 @@ namespace exchange {
             EventCollector second_events;
             MatchingEngine first_matching{first_events};
             MatchingEngine second_matching{second_events};
+            Ledger first_ledger;
+            Ledger second_ledger;
             ExecutionCoordinator first{
                 test_instrument,
                 first_accounts,
                 first_reservations,
                 first_matching,
-                first_events};
+                first_events,
+                first_ledger};
             ExecutionCoordinator second{
                 test_instrument,
                 second_accounts,
                 second_reservations,
                 second_matching,
-                second_events};
+                second_events,
+                second_ledger};
 
             for (AccountStore* accounts : {&first_accounts, &second_accounts}) {
                 ASSERT_TRUE(accounts->create_account(1));
@@ -493,6 +574,7 @@ namespace exchange {
             expect_order_eq(
                 std::get<OrderAccepted>(first_events.events().front().payload).order,
                 std::get<OrderAccepted>(second_events.events().front().payload).order);
+            EXPECT_EQ(first_ledger.entries(), second_ledger.entries());
         }
 
         TEST_F(ExecutionCoordinatorTest, ValidatesCoordinatorBoundaryBeforeMutation) {
@@ -514,6 +596,7 @@ namespace exchange {
             EXPECT_EQ(accounts.find_balance(1, 10), balance_before);
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, CancelsRestingOrderAndReleasesReservation) {
@@ -537,6 +620,79 @@ namespace exchange {
             expect_order_eq(
                 std::get<OrderCancelled>(events.events().front().payload).order,
                 order);
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(
+                ledger.entries()[0],
+                (LedgerEntry{
+                    1,
+                    make_reserve_ledger_transaction(401, 1, 10, 300)}));
+            EXPECT_EQ(
+                ledger.entries()[1],
+                (LedgerEntry{
+                    2,
+                    make_release_ledger_transaction(401, 1, 10, 300)}));
+        }
+
+        TEST(ExecutionCoordinatorCancelLedgerTest,
+             SellCancelUsesNormalizedReservationSnapshot) {
+            constexpr InstrumentContext scaled_instrument{
+                20,
+                10,
+                1'000,
+                1,
+                1,
+            };
+            AccountStore accounts;
+            OrderReservationStore reservations;
+            EventCollector events;
+            MatchingEngine matching_engine{events};
+            Ledger ledger;
+            ExecutionCoordinator coordinator{
+                scaled_instrument,
+                accounts,
+                reservations,
+                matching_engine,
+                events,
+                ledger};
+            ASSERT_TRUE(accounts.create_account(1));
+            accounts.fund(1, 20, 4'000);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(412, Side::Sell, 100, 3)}),
+                SubmitResult::Accepted);
+            ASSERT_EQ(
+                reservations.find(412),
+                (OrderReservation{1, 20, 3'000, 3'000}));
+
+            ASSERT_EQ(
+                coordinator.cancel_order(1, 412),
+                CancelResult::Cancelled);
+
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{4'000, 0}));
+            EXPECT_FALSE(reservations.find(412).has_value());
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(
+                ledger.entries()[0],
+                (LedgerEntry{
+                    1,
+                    make_reserve_ledger_transaction(
+                        412,
+                        1,
+                        20,
+                        3'000)}));
+            EXPECT_EQ(
+                ledger.entries()[1],
+                (LedgerEntry{
+                    2,
+                    make_release_ledger_transaction(
+                        412,
+                        1,
+                        20,
+                        3'000)}));
+            ASSERT_EQ(events.size(), 1U);
+            EXPECT_TRUE(std::holds_alternative<OrderCancelled>(
+                events.events().front().payload));
         }
 
         TEST_F(ExecutionCoordinatorTest, PartialConsumeCancelReleasesOnlyRemainder) {
@@ -559,6 +715,12 @@ namespace exchange {
             ASSERT_EQ(events.size(), 1U);
             EXPECT_TRUE(std::holds_alternative<OrderCancelled>(
                 events.events().front().payload));
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(
+                ledger.entries()[1],
+                (LedgerEntry{
+                    2,
+                    make_release_ledger_transaction(402, 1, 10, 180)}));
         }
 
         TEST_F(ExecutionCoordinatorTest, WrongOwnerCannotCancelOrder) {
@@ -580,6 +742,17 @@ namespace exchange {
             EXPECT_EQ(reservations.find(403), reservation_before);
             EXPECT_TRUE(matching_engine.order_book().find_order(403).has_value());
             EXPECT_TRUE(events.empty());
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(ledger.entries()[0].sequence, 1U);
+
+            EXPECT_EQ(coordinator.cancel_order(1, 403),
+                      CancelResult::Cancelled);
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(
+                ledger.entries()[1],
+                (LedgerEntry{
+                    2,
+                    make_release_ledger_transaction(403, 1, 10, 100)}));
         }
 
         TEST_F(ExecutionCoordinatorTest, MissingReservationReturnsNotFound) {
@@ -594,6 +767,7 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(404).has_value());
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, PureMatchingOrderIsNotAccountCancellable) {
@@ -692,6 +866,12 @@ namespace exchange {
             EXPECT_EQ(reservations.find(409), reservation_before);
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
+
+            ledger.append(
+                make_reserve_ledger_transaction(499, 1, 10, 1));
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(ledger.entries()[0].sequence, 1U);
         }
 
         TEST_F(ExecutionCoordinatorTest, ZeroRemainingRecordIsFatalAndOrderStaysLive) {
@@ -715,6 +895,8 @@ namespace exchange {
             EXPECT_EQ(reservations.find(410), reservation_before);
             EXPECT_TRUE(matching_engine.order_book().find_order(410).has_value());
             EXPECT_TRUE(events.empty());
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(ledger.entries()[0].sequence, 1U);
         }
 
         TEST_F(ExecutionCoordinatorTest, ReleaseFailureRetainsMetadataAndCancelEvent) {
@@ -741,6 +923,12 @@ namespace exchange {
             expect_order_eq(
                 std::get<OrderCancelled>(events.events().front().payload).order,
                 order);
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(
+                ledger.entries()[0],
+                (LedgerEntry{
+                    1,
+                    make_reserve_ledger_transaction(411, 1, 10, 100)}));
         }
 
         TEST(ExecutionCoordinatorCancelDeterminismTest, IdenticalSequencesProduceIdenticalState) {
@@ -752,18 +940,22 @@ namespace exchange {
             EventCollector second_events;
             MatchingEngine first_matching{first_events};
             MatchingEngine second_matching{second_events};
+            Ledger first_ledger;
+            Ledger second_ledger;
             ExecutionCoordinator first{
                 test_instrument,
                 first_accounts,
                 first_reservations,
                 first_matching,
-                first_events};
+                first_events,
+                first_ledger};
             ExecutionCoordinator second{
                 test_instrument,
                 second_accounts,
                 second_reservations,
                 second_matching,
-                second_events};
+                second_events,
+                second_ledger};
 
             for (AccountStore* account_store : {&first_accounts, &second_accounts}) {
                 ASSERT_TRUE(account_store->create_account(1));
@@ -811,9 +1003,10 @@ namespace exchange {
             expect_order_eq(
                 std::get<OrderCancelled>(first_events.events().front().payload).order,
                 std::get<OrderCancelled>(second_events.events().front().payload).order);
+            EXPECT_EQ(first_ledger.entries(), second_ledger.entries());
         }
 
-        TEST_F(ExecutionCoordinatorTest, CrossingBuyConsumesBothSidesAndCleansCompletedOrders) {
+        TEST_F(ExecutionCoordinatorTest, CrossingBuyClearsAssetsAndCleansCompletedOrders) {
             ASSERT_TRUE(accounts.create_account(1));
             ASSERT_TRUE(accounts.create_account(2));
             accounts.fund(1, 20, 5);
@@ -824,6 +1017,8 @@ namespace exchange {
                 SubmitResult::Accepted);
             const auto maker_balance = accounts.find_balance(1, 20);
             const auto taker_balance = accounts.find_balance(2, 10);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
 
             EXPECT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
@@ -835,6 +1030,10 @@ namespace exchange {
             EXPECT_NE(accounts.find_balance(2, 10), taker_balance);
             EXPECT_EQ(accounts.find_balance(1, 20), (Balance{3, 0}));
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{800, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{200, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{2, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             EXPECT_FALSE(reservations.find(601).has_value());
             EXPECT_FALSE(reservations.find(602).has_value());
             EXPECT_FALSE(matching_engine.order_book().find_order(601).has_value());
@@ -851,9 +1050,23 @@ namespace exchange {
                 events.events()[2].payload));
             EXPECT_TRUE(std::holds_alternative<OrderFilled>(
                 events.events()[3].payload));
+            ASSERT_EQ(ledger.entries().size(), 3U);
+            EXPECT_EQ(
+                ledger.entries()[0].transaction,
+                make_reserve_ledger_transaction(601, 1, 20, 2));
+            EXPECT_EQ(
+                ledger.entries()[1].transaction,
+                make_reserve_ledger_transaction(602, 2, 10, 200));
+            EXPECT_EQ(
+                ledger.entries()[2].transaction,
+                make_trade_ledger_transaction(
+                    test_instrument,
+                    Trade{602, 601, 100, 2, 0},
+                    2,
+                    1));
         }
 
-        TEST_F(ExecutionCoordinatorTest, CrossingSellConsumesBothSidesAndCleansCompletedOrders) {
+        TEST_F(ExecutionCoordinatorTest, CrossingSellClearsAssetsAndCleansCompletedOrders) {
             ASSERT_TRUE(accounts.create_account(1));
             ASSERT_TRUE(accounts.create_account(2));
             accounts.fund(1, 10, 1'000);
@@ -864,6 +1077,8 @@ namespace exchange {
                 SubmitResult::Accepted);
             const auto maker_balance = accounts.find_balance(1, 10);
             const auto taker_balance = accounts.find_balance(2, 20);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
 
             EXPECT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
@@ -875,6 +1090,10 @@ namespace exchange {
             EXPECT_NE(accounts.find_balance(2, 20), taker_balance);
             EXPECT_EQ(accounts.find_balance(1, 10), (Balance{800, 0}));
             EXPECT_EQ(accounts.find_balance(2, 20), (Balance{3, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{2, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 10), (Balance{200, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             EXPECT_FALSE(reservations.find(603).has_value());
             EXPECT_FALSE(reservations.find(604).has_value());
             EXPECT_FALSE(matching_engine.order_book().find_order(603).has_value());
@@ -887,7 +1106,7 @@ namespace exchange {
                 (Trade{603, 604, 100, 2, 0}));
         }
 
-        TEST_F(ExecutionCoordinatorTest, MultiMakerBuyConsumesCumulativelyAndCleansAfterTradeLoop) {
+        TEST_F(ExecutionCoordinatorTest, MultiMakerBuyClearsCumulativeCreditsAndConservesAssets) {
             ASSERT_TRUE(accounts.create_account(1));
             ASSERT_TRUE(accounts.create_account(2));
             accounts.fund(1, 20, 10);
@@ -900,9 +1119,11 @@ namespace exchange {
             ASSERT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
                     1,
-                    limit_order(606, Side::Sell, 100, 2)}),
+                    limit_order(606, Side::Sell, 100, 3)}),
                 SubmitResult::Accepted);
             const auto maker_balance = accounts.find_balance(1, 20);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
 
             EXPECT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
@@ -911,12 +1132,19 @@ namespace exchange {
                 SubmitResult::Accepted);
 
             EXPECT_NE(accounts.find_balance(1, 20), maker_balance);
-            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{7, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{6, 1}));
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{710, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{290, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{3, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             EXPECT_FALSE(reservations.find(605).has_value());
-            EXPECT_FALSE(reservations.find(606).has_value());
+            EXPECT_EQ(reservations.find(606),
+                      (OrderReservation{1, 20, 3, 1}));
             EXPECT_FALSE(reservations.find(607).has_value());
-            EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
+            ASSERT_EQ(matching_engine.order_book().order_count(), 1U);
+            ASSERT_TRUE(matching_engine.order_book().find_order(606).has_value());
+            EXPECT_EQ(matching_engine.order_book().find_order(606)->quantity, 1);
             ASSERT_EQ(events.size(), 7U);
             ASSERT_TRUE(std::holds_alternative<TradeCreated>(
                 events.events()[1].payload));
@@ -930,7 +1158,7 @@ namespace exchange {
                 (Trade{607, 606, 100, 2, 0}));
         }
 
-        TEST_F(ExecutionCoordinatorTest, MultiMakerSellConsumesInActualTradeOrder) {
+        TEST_F(ExecutionCoordinatorTest, MultiMakerSellClearsInActualTradeOrder) {
             ASSERT_TRUE(accounts.create_account(1));
             ASSERT_TRUE(accounts.create_account(2));
             ASSERT_TRUE(accounts.create_account(3));
@@ -949,6 +1177,8 @@ namespace exchange {
                 SubmitResult::Accepted);
             const auto first_balance = accounts.find_balance(1, 10);
             const auto second_balance = accounts.find_balance(2, 10);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2, 3});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2, 3});
 
             EXPECT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
@@ -961,6 +1191,15 @@ namespace exchange {
             EXPECT_EQ(accounts.find_balance(1, 10), (Balance{890, 0}));
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{800, 0}));
             EXPECT_EQ(accounts.find_balance(3, 20), (Balance{7, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{1, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{2, 0}));
+            EXPECT_EQ(accounts.find_balance(3, 10), (Balance{310, 0}));
+            EXPECT_EQ(
+                total_asset(accounts, 20, {1, 2, 3}),
+                base_total_before);
+            EXPECT_EQ(
+                total_asset(accounts, 10, {1, 2, 3}),
+                quote_total_before);
             EXPECT_FALSE(reservations.find(608).has_value());
             EXPECT_FALSE(reservations.find(609).has_value());
             EXPECT_FALSE(reservations.find(610).has_value());
@@ -1076,6 +1315,7 @@ namespace exchange {
             const auto maker_balance = accounts.find_balance(1, 20);
             const auto first_reservation = reservations.find(617);
             const auto second_reservation = reservations.find(618);
+            const auto ledger_before = ledger.entries();
 
             EXPECT_THROW(
                 static_cast<void>(coordinator.submit_order(
@@ -1090,6 +1330,7 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(619).has_value());
             EXPECT_EQ(matching_engine.order_book().order_count(), 2U);
             EXPECT_TRUE(events.empty());
+            EXPECT_EQ(ledger.entries(), ledger_before);
         }
 
         TEST_F(ExecutionCoordinatorTest, FullyFilledBuyReleasesPriceImprovementResidual) {
@@ -1103,6 +1344,8 @@ namespace exchange {
                     limit_order(620, Side::Sell, 90, 2)}),
                 SubmitResult::Accepted);
             const auto taker_balance = accounts.find_balance(2, 10);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
 
             EXPECT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
@@ -1115,7 +1358,25 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(621).has_value());
             EXPECT_FALSE(reservations.find(620).has_value());
             EXPECT_EQ(accounts.find_balance(1, 20), (Balance{3, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{180, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{2, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             ASSERT_EQ(events.size(), 4U);
+            ASSERT_EQ(ledger.entries().size(), 4U);
+            EXPECT_EQ(
+                ledger.entries()[1].transaction,
+                make_reserve_ledger_transaction(621, 2, 10, 200));
+            EXPECT_EQ(
+                ledger.entries()[2].transaction,
+                make_trade_ledger_transaction(
+                    test_instrument,
+                    Trade{621, 620, 90, 2, 0},
+                    2,
+                    1));
+            EXPECT_EQ(
+                ledger.entries()[3].transaction,
+                make_release_ledger_transaction(621, 2, 10, 20));
         }
 
         TEST_F(ExecutionCoordinatorTest, FullyFilledSellRequiresZeroProjectedRemaining) {
@@ -1151,12 +1412,14 @@ namespace exchange {
             OrderReservationStore reservations;
             EventCollector events;
             MatchingEngine matching_engine{events};
+            Ledger ledger;
             ExecutionCoordinator coordinator{
                 instrument,
                 accounts,
                 reservations,
                 matching_engine,
-                events};
+                events,
+                ledger};
             const Order maker = limit_order(632, Side::Sell, 3, 2);
             ASSERT_TRUE(matching_engine.add_order(maker).empty());
             events.clear();
@@ -1192,6 +1455,8 @@ namespace exchange {
             ASSERT_TRUE(accounts.create_account(2));
             accounts.fund(1, 20, 10);
             accounts.fund(2, 10, 1'000);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
             ASSERT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
                     1,
@@ -1208,9 +1473,19 @@ namespace exchange {
             EXPECT_FALSE(reservations.find(625).has_value());
             EXPECT_EQ(accounts.find_balance(1, 20), (Balance{5, 3}));
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{800, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{200, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{2, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             ASSERT_EQ(matching_engine.order_book().find_order(624)->quantity, 3);
 
             ASSERT_EQ(coordinator.cancel_order(1, 624), CancelResult::Cancelled);
+            ASSERT_EQ(ledger.entries().size(), 4U);
+            EXPECT_EQ(
+                ledger.entries()[3],
+                (LedgerEntry{
+                    4,
+                    make_release_ledger_transaction(624, 1, 20, 3)}));
             ASSERT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
                     1,
@@ -1227,11 +1502,23 @@ namespace exchange {
             ASSERT_EQ(matching_engine.order_book().find_order(627)->quantity, 3);
             EXPECT_EQ(accounts.find_balance(1, 20), (Balance{6, 0}));
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{300, 300}));
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{400, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{4, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
 
             EXPECT_EQ(coordinator.cancel_order(2, 627), CancelResult::Cancelled);
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{600, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             EXPECT_FALSE(reservations.find(627).has_value());
             EXPECT_FALSE(matching_engine.order_book().find_order(627).has_value());
+            ASSERT_EQ(ledger.entries().size(), 8U);
+            EXPECT_EQ(
+                ledger.entries()[7],
+                (LedgerEntry{
+                    8,
+                    make_release_ledger_transaction(627, 2, 10, 300)}));
         }
 
         TEST_F(ExecutionCoordinatorTest, ThreeLevelBuyReleasesExactPriceImprovementResidual) {
@@ -1239,6 +1526,8 @@ namespace exchange {
             ASSERT_TRUE(accounts.create_account(2));
             accounts.fund(1, 20, 3);
             accounts.fund(2, 10, 1'000);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
             for (const Order& maker : {
                      limit_order(634, Side::Sell, 90, 1),
                      limit_order(635, Side::Sell, 95, 1),
@@ -1256,12 +1545,39 @@ namespace exchange {
 
             EXPECT_EQ(accounts.find_balance(1, 20), (Balance{0, 0}));
             EXPECT_EQ(accounts.find_balance(2, 10), (Balance{715, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{285, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{3, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             for (const OrderId id : {
                      OrderId{634}, OrderId{635}, OrderId{636}, OrderId{637}}) {
                 EXPECT_FALSE(reservations.find(id).has_value());
             }
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             ASSERT_EQ(events.size(), 10U);
+            ASSERT_EQ(ledger.entries().size(), 8U);
+            EXPECT_EQ(
+                ledger.entries()[3].transaction,
+                make_reserve_ledger_transaction(637, 2, 10, 300));
+            const std::array<Trade, 3> expected_trades{
+                Trade{637, 634, 90, 1, 0},
+                Trade{637, 635, 95, 1, 0},
+                Trade{637, 636, 100, 1, 0},
+            };
+            for (std::size_t index = 0;
+                 index < expected_trades.size();
+                 ++index) {
+                EXPECT_EQ(
+                    ledger.entries()[4 + index].transaction,
+                    make_trade_ledger_transaction(
+                        test_instrument,
+                        expected_trades[index],
+                        2,
+                        1));
+            }
+            EXPECT_EQ(
+                ledger.entries()[7].transaction,
+                make_release_ledger_transaction(637, 2, 10, 15));
         }
 
         TEST_F(ExecutionCoordinatorTest, PartialImmediateSellRestsWithBaseRemainder) {
@@ -1269,6 +1585,8 @@ namespace exchange {
             ASSERT_TRUE(accounts.create_account(2));
             accounts.fund(1, 10, 500);
             accounts.fund(2, 20, 10);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
             ASSERT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
                     1,
@@ -1286,12 +1604,21 @@ namespace exchange {
                       (OrderReservation{2, 20, 5, 3}));
             EXPECT_EQ(accounts.find_balance(1, 10), (Balance{300, 0}));
             EXPECT_EQ(accounts.find_balance(2, 20), (Balance{5, 3}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{2, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 10), (Balance{200, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             ASSERT_TRUE(matching_engine.order_book().find_order(639).has_value());
             EXPECT_EQ(matching_engine.order_book().find_order(639)->quantity, 3);
             EXPECT_EQ(matching_engine.order_book().order_count(), 1U);
             ASSERT_EQ(events.size(), 4U);
             EXPECT_TRUE(std::holds_alternative<OrderPartiallyFilled>(
                 events.events()[3].payload));
+            ASSERT_EQ(ledger.entries().size(), 3U);
+            EXPECT_TRUE(std::holds_alternative<ReserveLedgerMetadata>(
+                ledger.entries()[1].transaction.metadata));
+            EXPECT_TRUE(std::holds_alternative<TradeLedgerMetadata>(
+                ledger.entries()[2].transaction.metadata));
         }
 
         TEST_F(ExecutionCoordinatorTest, FullyFilledBuyMakerReleasesPositiveResidualGenerically) {
@@ -1304,6 +1631,8 @@ namespace exchange {
             accounts.fund(2, 20, 1);
             ASSERT_EQ(accounts.reserve(1, 10, 150), ReserveResult::Success);
             ASSERT_TRUE(reservations.create(640, 1, 10, 150));
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
 
             EXPECT_EQ(
                 coordinator.submit_order(OrderAdmissionRequest{
@@ -1313,9 +1642,27 @@ namespace exchange {
 
             EXPECT_EQ(accounts.find_balance(1, 10), (Balance{50, 0}));
             EXPECT_EQ(accounts.find_balance(2, 20), (Balance{0, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{1, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 10), (Balance{100, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
             EXPECT_FALSE(reservations.find(640).has_value());
             EXPECT_FALSE(reservations.find(641).has_value());
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
+            ASSERT_EQ(ledger.entries().size(), 3U);
+            EXPECT_EQ(
+                ledger.entries()[0].transaction,
+                make_reserve_ledger_transaction(641, 2, 20, 1));
+            EXPECT_EQ(
+                ledger.entries()[1].transaction,
+                make_trade_ledger_transaction(
+                    test_instrument,
+                    Trade{640, 641, 100, 1, 0},
+                    1,
+                    2));
+            EXPECT_EQ(
+                ledger.entries()[2].transaction,
+                make_release_ledger_transaction(640, 1, 10, 50));
         }
 
         TEST_F(ExecutionCoordinatorTest, NonExecutablePureV1OrderDoesNotBlockAdmission) {
@@ -1338,6 +1685,241 @@ namespace exchange {
             ASSERT_EQ(events.size(), 1U);
             EXPECT_TRUE(std::holds_alternative<OrderAccepted>(
                 events.events().front().payload));
+        }
+
+        TEST_F(ExecutionCoordinatorTest, ExistingCreditDestinationsAccumulateRuntimeCredits) {
+            ASSERT_TRUE(accounts.create_account(1));
+            ASSERT_TRUE(accounts.create_account(2));
+            accounts.fund(1, 20, 1);
+            accounts.fund(1, 10, 60);
+            accounts.fund(2, 10, 200);
+            accounts.fund(2, 20, 50);
+            const Amount base_total_before = total_asset(accounts, 20, {1, 2});
+            const Amount quote_total_before = total_asset(accounts, 10, {1, 2});
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(650, Side::Sell, 100, 1)}),
+                SubmitResult::Accepted);
+
+            EXPECT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    2,
+                    limit_order(651, Side::Buy, 100, 1)}),
+                SubmitResult::Accepted);
+
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{160, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{51, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{0, 0}));
+            EXPECT_EQ(accounts.find_balance(2, 10), (Balance{100, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1, 2}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1, 2}), quote_total_before);
+            EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
+        }
+
+        TEST_F(ExecutionCoordinatorTest, BuyerBaseCreditOverflowFailsBeforeMatching) {
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            ASSERT_TRUE(accounts.create_account(1));
+            ASSERT_TRUE(accounts.create_account(2));
+            accounts.fund(1, 20, 1);
+            accounts.fund(2, 10, 200);
+            accounts.fund(2, 20, maximum);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(652, Side::Sell, 100, 1)}),
+                SubmitResult::Accepted);
+            const auto maker_balance = accounts.find_balance(1, 20);
+            const auto maker_reservation = reservations.find(652);
+            const auto taker_quote = accounts.find_balance(2, 10);
+            const auto ledger_before = ledger.entries();
+
+            EXPECT_THROW(
+                static_cast<void>(coordinator.submit_order(
+                    OrderAdmissionRequest{
+                        2,
+                        limit_order(653, Side::Buy, 100, 1)})),
+                std::overflow_error);
+
+            EXPECT_EQ(accounts.find_balance(1, 20), maker_balance);
+            EXPECT_EQ(accounts.find_balance(2, 10), taker_quote);
+            EXPECT_EQ(accounts.find_balance(2, 20), (Balance{maximum, 0}));
+            EXPECT_EQ(reservations.find(652), maker_reservation);
+            EXPECT_FALSE(reservations.find(653).has_value());
+            ASSERT_TRUE(matching_engine.order_book().find_order(652).has_value());
+            EXPECT_FALSE(matching_engine.order_book().find_order(653).has_value());
+            EXPECT_TRUE(events.empty());
+            EXPECT_EQ(ledger.entries(), ledger_before);
+        }
+
+        TEST_F(ExecutionCoordinatorTest, SellerQuoteCreditOverflowFailsBeforeMatching) {
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            ASSERT_TRUE(accounts.create_account(1));
+            ASSERT_TRUE(accounts.create_account(2));
+            accounts.fund(1, 20, 1);
+            accounts.fund(1, 10, maximum);
+            accounts.fund(2, 10, 200);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(654, Side::Sell, 100, 1)}),
+                SubmitResult::Accepted);
+            const auto maker_base = accounts.find_balance(1, 20);
+            const auto maker_quote = accounts.find_balance(1, 10);
+            const auto maker_reservation = reservations.find(654);
+            const auto taker_quote = accounts.find_balance(2, 10);
+            const auto ledger_before = ledger.entries();
+
+            EXPECT_THROW(
+                static_cast<void>(coordinator.submit_order(
+                    OrderAdmissionRequest{
+                        2,
+                        limit_order(655, Side::Buy, 100, 1)})),
+                std::overflow_error);
+
+            EXPECT_EQ(accounts.find_balance(1, 20), maker_base);
+            EXPECT_EQ(accounts.find_balance(1, 10), maker_quote);
+            EXPECT_EQ(accounts.find_balance(2, 10), taker_quote);
+            EXPECT_EQ(reservations.find(654), maker_reservation);
+            EXPECT_FALSE(reservations.find(655).has_value());
+            ASSERT_TRUE(matching_engine.order_book().find_order(654).has_value());
+            EXPECT_TRUE(events.empty());
+            EXPECT_EQ(ledger.entries(), ledger_before);
+        }
+
+        TEST_F(ExecutionCoordinatorTest, CumulativeBuyerCreditOverflowFailsOnLaterTrade) {
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            ASSERT_TRUE(accounts.create_account(1));
+            ASSERT_TRUE(accounts.create_account(2));
+            accounts.fund(1, 20, 4);
+            accounts.fund(2, 10, 1'000);
+            accounts.fund(2, 20, maximum - 3);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(656, Side::Sell, 90, 2)}),
+                SubmitResult::Accepted);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(657, Side::Sell, 100, 2)}),
+                SubmitResult::Accepted);
+            const auto maker_balance = accounts.find_balance(1, 20);
+            const auto first_reservation = reservations.find(656);
+            const auto second_reservation = reservations.find(657);
+            const auto taker_quote = accounts.find_balance(2, 10);
+            const auto ledger_before = ledger.entries();
+
+            EXPECT_THROW(
+                static_cast<void>(coordinator.submit_order(
+                    OrderAdmissionRequest{
+                        2,
+                        limit_order(658, Side::Buy, 100, 4)})),
+                std::overflow_error);
+
+            EXPECT_EQ(accounts.find_balance(1, 20), maker_balance);
+            EXPECT_EQ(accounts.find_balance(2, 10), taker_quote);
+            EXPECT_EQ(accounts.find_balance(2, 20),
+                      (Balance{maximum - 3, 0}));
+            EXPECT_EQ(reservations.find(656), first_reservation);
+            EXPECT_EQ(reservations.find(657), second_reservation);
+            EXPECT_FALSE(reservations.find(658).has_value());
+            EXPECT_EQ(matching_engine.order_book().order_count(), 2U);
+            EXPECT_TRUE(events.empty());
+            EXPECT_EQ(ledger.entries(), ledger_before);
+        }
+
+        TEST_F(ExecutionCoordinatorTest, CumulativeSellerCreditOverflowFailsOnLaterTrade) {
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            ASSERT_TRUE(accounts.create_account(1));
+            ASSERT_TRUE(accounts.create_account(2));
+            accounts.fund(1, 20, 2);
+            accounts.fund(1, 10, maximum - 150);
+            accounts.fund(2, 10, 500);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(659, Side::Sell, 100, 1)}),
+                SubmitResult::Accepted);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(660, Side::Sell, 100, 1)}),
+                SubmitResult::Accepted);
+            const auto maker_base = accounts.find_balance(1, 20);
+            const auto maker_quote = accounts.find_balance(1, 10);
+            const auto first_reservation = reservations.find(659);
+            const auto second_reservation = reservations.find(660);
+
+            EXPECT_THROW(
+                static_cast<void>(coordinator.submit_order(
+                    OrderAdmissionRequest{
+                        2,
+                        limit_order(661, Side::Buy, 100, 2)})),
+                std::overflow_error);
+
+            EXPECT_EQ(accounts.find_balance(1, 20), maker_base);
+            EXPECT_EQ(accounts.find_balance(1, 10), maker_quote);
+            EXPECT_EQ(reservations.find(659), first_reservation);
+            EXPECT_EQ(reservations.find(660), second_reservation);
+            EXPECT_FALSE(reservations.find(661).has_value());
+            EXPECT_EQ(matching_engine.order_book().order_count(), 2U);
+            EXPECT_TRUE(events.empty());
+        }
+
+        TEST_F(ExecutionCoordinatorTest, SelfTradeClearsConsumeAndCreditFieldsIndependently) {
+            ASSERT_TRUE(accounts.create_account(1));
+            accounts.fund(1, 10, 1'000);
+            accounts.fund(1, 20, 5);
+            const Amount base_total_before = total_asset(accounts, 20, {1});
+            const Amount quote_total_before = total_asset(accounts, 10, {1});
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(662, Side::Sell, 100, 2)}),
+                SubmitResult::Accepted);
+
+            EXPECT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(663, Side::Buy, 100, 2)}),
+                SubmitResult::Accepted);
+
+            EXPECT_EQ(accounts.find_balance(1, 10), (Balance{1'000, 0}));
+            EXPECT_EQ(accounts.find_balance(1, 20), (Balance{5, 0}));
+            EXPECT_EQ(total_asset(accounts, 20, {1}), base_total_before);
+            EXPECT_EQ(total_asset(accounts, 10, {1}), quote_total_before);
+            EXPECT_FALSE(reservations.find(662).has_value());
+            EXPECT_FALSE(reservations.find(663).has_value());
+            EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
+            ASSERT_EQ(events.size(), 4U);
+        }
+
+        TEST_F(ExecutionCoordinatorTest, MissingConsumptionAssetRowRemainsFatal) {
+            const Order maker = limit_order(664, Side::Sell, 100, 1);
+            ASSERT_TRUE(matching_engine.add_order(maker).empty());
+            events.clear();
+            ASSERT_TRUE(accounts.create_account(1));
+            ASSERT_TRUE(accounts.create_account(2));
+            accounts.fund(2, 10, 200);
+            ASSERT_TRUE(reservations.create(664, 1, 20, 1));
+            const auto maker_reservation = reservations.find(664);
+            const auto taker_balance = accounts.find_balance(2, 10);
+
+            EXPECT_THROW(
+                static_cast<void>(coordinator.submit_order(
+                    OrderAdmissionRequest{
+                        2,
+                        limit_order(665, Side::Buy, 100, 1)})),
+                std::logic_error);
+
+            EXPECT_FALSE(accounts.find_balance(1, 20).has_value());
+            EXPECT_EQ(accounts.find_balance(2, 10), taker_balance);
+            EXPECT_EQ(reservations.find(664), maker_reservation);
+            EXPECT_FALSE(reservations.find(665).has_value());
+            ASSERT_TRUE(matching_engine.order_book().find_order(664).has_value());
+            EXPECT_FALSE(matching_engine.order_book().find_order(665).has_value());
+            EXPECT_TRUE(events.empty());
         }
 
         TEST_F(ExecutionCoordinatorTest, DuplicateOrderIdCannotEnterPlanOnBothSides) {
@@ -1372,18 +1954,22 @@ namespace exchange {
             EventCollector second_events;
             MatchingEngine first_matching{first_events};
             MatchingEngine second_matching{second_events};
+            Ledger first_ledger;
+            Ledger second_ledger;
             ExecutionCoordinator first{
                 test_instrument,
                 first_accounts,
                 first_reservations,
                 first_matching,
-                first_events};
+                first_events,
+                first_ledger};
             ExecutionCoordinator second{
                 test_instrument,
                 second_accounts,
                 second_reservations,
                 second_matching,
-                second_events};
+                second_events,
+                second_ledger};
 
             for (AccountStore* store : {&first_accounts, &second_accounts}) {
                 ASSERT_TRUE(store->create_account(1));
@@ -1435,6 +2021,7 @@ namespace exchange {
                     std::get<TradeCreated>(
                         second_events.events()[index].payload).trade);
             }
+            EXPECT_EQ(first_ledger.entries(), second_ledger.entries());
         }
     }  // namespace
 }  // namespace exchange

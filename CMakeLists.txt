@@ -11,6 +11,8 @@ add_library(exchange_core
     src/account_store.cpp
     src/execution_coordinator.cpp
     src/financial_conversion.cpp
+    src/funding_coordinator.cpp
+    src/ledger.cpp
     src/matching_engine.cpp
     src/order_book.cpp
     src/order_reservation_store.cpp
@@ -133,7 +135,9 @@ if(EXCHANGE_BUILD_TESTS)
         tests/execution_coordinator_test.cpp
         tests/event_system_test.cpp
         tests/financial_conversion_test.cpp
+        tests/funding_coordinator_test.cpp
         tests/line_protocol_test.cpp
+        tests/ledger_test.cpp
         tests/order_book_test.cpp
         tests/order_reservation_store_test.cpp
         tests/replay_engine_test.cpp

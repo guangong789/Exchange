@@ -11,6 +11,11 @@ namespace exchange {
         InsufficientFunds,
     };
 
+    enum class AvailableTransferResult {
+        Success,
+        InsufficientFunds,
+    };
+
     class AccountStore {
     public:
         AccountStore() = default;
@@ -28,6 +33,17 @@ namespace exchange {
         // Bootstrap/test funding only. This is not a general financial
         // mutation API.
         void fund(AccountId account_id, AssetId asset_id, Amount amount);
+
+        void credit_available(
+            AccountId account_id,
+            AssetId asset_id,
+            Amount amount);
+
+        [[nodiscard]] AvailableTransferResult transfer_available(
+            AccountId from_account_id,
+            AccountId to_account_id,
+            AssetId asset_id,
+            Amount amount);
 
         [[nodiscard]] ReserveResult reserve(
             AccountId account_id,

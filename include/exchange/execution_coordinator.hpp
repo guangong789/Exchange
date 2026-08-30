@@ -3,6 +3,7 @@
 #include "exchange/account_store.hpp"
 #include "exchange/event_collector.hpp"
 #include "exchange/financial_conversion.hpp"
+#include "exchange/ledger.hpp"
 #include "exchange/matching_engine.hpp"
 #include "exchange/order_reservation_store.hpp"
 
@@ -33,7 +34,8 @@ namespace exchange {
             AccountStore& accounts,
             OrderReservationStore& reservations,
             MatchingEngine& matching_engine,
-            EventCollector& events);
+            EventCollector& events,
+            Ledger& ledger);
 
         ExecutionCoordinator(const ExecutionCoordinator&) = delete;
         ExecutionCoordinator& operator=(const ExecutionCoordinator&) = delete;
@@ -53,5 +55,6 @@ namespace exchange {
         OrderReservationStore& reservations_;
         MatchingEngine& matching_engine_;
         EventCollector& events_;
+        Ledger& ledger_;
     };
 }  // namespace exchange
