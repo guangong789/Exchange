@@ -55,4 +55,5 @@ Thumbs.db
 .env.*
 !.env.example
 
-docs/.tools/
+docs/
+.tools/
