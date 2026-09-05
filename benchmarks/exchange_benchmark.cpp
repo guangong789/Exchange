@@ -8,12 +8,12 @@
 #include <variant>
 #include <vector>
 
-#include "exchange/command.hpp"
-#include "exchange/event_collector.hpp"
-#include "exchange/matching_engine.hpp"
-#include "exchange/order_book.hpp"
-#include "exchange/replay_engine.hpp"
-#include "exchange/workload_generator.hpp"
+#include "exchange/matching/command.hpp"
+#include "exchange/matching/event_collector.hpp"
+#include "exchange/matching/matching_engine.hpp"
+#include "exchange/matching/order_book.hpp"
+#include "exchange/replay/replay_engine.hpp"
+#include "exchange/replay/workload_generator.hpp"
 
 namespace exchange {
     namespace {

@@ -28,8 +28,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "exchange/tcp_gateway.hpp"
-#include "exchange/types.hpp"
+#include "exchange/gateway/tcp_gateway.hpp"
+#include "exchange/core/types.hpp"
 
 namespace exchange {
     namespace {

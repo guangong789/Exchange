@@ -1,4 +1,4 @@
-#include "exchange/tcp_gateway.hpp"
+#include "exchange/gateway/tcp_gateway.hpp"
 
 #include <array>
 #include <cerrno>

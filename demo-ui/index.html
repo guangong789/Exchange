@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent 经济实验</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="folio">
+    <header class="folio-head">
+      <svg class="botanical botanical--head" viewBox="0 0 80 80" aria-hidden="true"><path d="M8 70C26 53 42 31 50 6M24 55c-9-9-15-7-18-3 7 5 12 7 18 3ZM38 34c7-10 14-10 18-6-6 8-12 10-18 6ZM48 17c-2-9 2-14 8-15 1 8-2 13-8 15Z"/></svg>
+      <p class="folio-code">EXCHANGE · LOCALHOST EVIDENCE RECORD</p>
+      <h1>Agent 经济实验</h1>
+      <p class="lede">确定性执行 · 外部认知 · 可回放经济状态</p>
+      <div class="controls">
+        <nav class="mode-switch" aria-label="演示模式">
+          <button id="mode-society" class="mode-button mode-button--active" type="button">Society Simulation</button>
+          <button id="mode-live-x402" class="mode-button" type="button">Live x402 Evidence</button>
+        </nav>
+        <div id="simulation-controls" class="mode-controls">
+          <button id="start" class="control-button control-button--start" type="button">启动模拟</button>
+          <button id="stop" class="control-button" type="button" disabled>停止</button>
+        </div>
+      </div>
+      <p id="status" role="status">Society Simulation 已就绪。</p>
+    </header>
+
+    <div id="society-view">
+      <section id="dashboard" class="society-stack" hidden aria-live="polite">
+        <section class="record-module episode-module" aria-label="Agent Society Episode">
+          <div class="module-heading"><div><p class="module-index">01</p><p class="evidence-code">AGENT SOCIETY</p><h2>多轮 Agent 协作</h2></div><span id="stream-status">—</span></div>
+          <div class="collaboration-path"><span>Analyst Agent<small>付费信息</small></span><i>→</i><span>Risk Agent<small>确定性约束</small></span><i>→</i><span>Trader Agent · DeepSeek<small>自主决策</small></span><i>→</i><span>经济核心<small>执行或拒绝</small></span></div>
+          <dl id="episode-meta" class="metadata-strip"></dl>
+          <details class="scenario-details"><summary>场景信息</summary><dl id="scenario-facts"></dl></details>
+          <div class="objective-progress" aria-label="目标进度"><span id="objective-label">目标进度 —</span><div><i id="objective-line"></i></div></div>
+          <div id="activity-stream" class="activity-stream"></div>
+          <section id="episode-completion" class="episode-completion" hidden>
+            <p class="evidence-code">EPISODE COMPLETE</p><div class="completion-heading"><h3 id="episode-outcome">—</h3></div>
+            <dl id="episode-highlights"></dl>
+          </section>
+        </section>
+
+        <section class="record-module runtime-module" aria-label="Economic Runtime Evidence">
+          <div class="module-heading"><div><p class="module-index">02</p><p class="evidence-code">ECONOMIC RUNTIME</p><h2>经济运行证据</h2></div><span>AUTHORITATIVE</span></div>
+          <div class="execution-path" aria-label="经济执行路径"><span>AgentAction</span><i>→</i><span>AgentActionGateway</span><i>→</i><span>ExecutionCoordinator</span><i>→</i><span>MatchingEngine</span><i>→</i><span>Account / Reservation / Ledger</span></div>
+          <p class="authority-note">Agent 决策，经济核心决定最终状态。</p>
+          <div class="runtime-groups">
+            <section><p class="evidence-code">ORDERS</p><h3>订单</h3><p id="runtime-orders" class="runtime-fact"></p></section>
+            <section><p class="evidence-code">EXECUTION</p><h3>成交</h3><p id="runtime-execution" class="runtime-fact"></p></section>
+            <section><p class="evidence-code">FINANCIAL</p><h3>资金</h3><p id="runtime-financial" class="runtime-fact"></p></section>
+            <section><p class="evidence-code">POLICY</p><h3>规则</h3><p id="runtime-policy" class="runtime-fact"></p></section>
+          </div>
+          <section id="execution-example" class="execution-example" hidden>
+            <p class="evidence-code">MATCHING EVIDENCE</p><h3>部分成交与剩余预留</h3><div id="execution-example-flow"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="replay-evidence" class="record-module replay-block" hidden>
+        <div class="module-heading"><div><p class="module-index">03</p><p class="evidence-code">DETERMINISTIC REPLAY</p><h2>fresh-world 经济重建</h2></div><span id="replay-status-label">NOT_RUN</span></div>
+        <section class="replay-section replay-premise">
+          <p id="replay-hint" class="replay-hint"></p>
+          <button id="run-replay" class="control-button" type="button">运行 Deterministic Replay</button>
+          <div id="replay-worlds-section" class="replay-external" hidden>
+            <table><thead><tr><th>外部依赖</th><th>原始世界</th><th>Replay</th></tr></thead><tbody id="replay-worlds"></tbody></table>
+          </div>
+        </section>
+        <section id="replay-input-section" class="replay-section" hidden>
+          <p class="evidence-code">REPLAY INPUTS</p><h3>确定性经济输入</h3>
+          <ol id="replay-inputs" class="replay-inputs"></ol>
+        </section>
+        <section id="replay-pipeline-section" class="replay-section" hidden>
+          <p class="evidence-code">FRESH-WORLD PATH</p><div class="replay-pipeline"><span>captured inputs</span><i>→</i><span>fresh world</span><i>→</i><span>ExecutionCoordinator</span><i>→</i><span>MatchingEngine</span><i>→</i><span>Account / Reservation / Ledger</span></div>
+        </section>
+        <section id="replay-final-section" class="replay-section" hidden>
+          <p class="evidence-code">FINAL PARITY</p><h3>最终经济状态</h3>
+          <div class="replay-comparison"><table><thead><tr><th>状态</th><th>原始世界</th><th>Replay</th><th>结果</th></tr></thead><tbody id="replay-comparison-body"></tbody></table></div>
+          <p id="replay-verdict" class="replay-verdict" hidden></p>
+        </section>
+      </section>
+      <details id="raw-details" class="raw-data" hidden><summary>原始运行数据</summary><pre id="raw"></pre></details>
+    </div>
+
+    <section id="live-x402-evidence" class="live-evidence" hidden aria-live="polite">
+      <div class="module-heading"><div><p class="evidence-code">LIVE x402 EVIDENCE</p><h2>Binance Agentic Wallet 支付预览</h2></div><span id="live-status">NOT_RUN</span></div>
+      <div class="live-intro"><p>展示 Agent 付费服务请求进入 x402 与 Binance Agentic Wallet 后的 preview 边界；不签名、不广播、不结算。</p><button id="run-live-x402" class="control-button control-button--start" type="button">运行 x402 检查</button></div>
+      <p id="live-message" class="live-message">尚未执行 Wallet 检查。</p>
+      <div id="live-protocol-flow" class="protocol-flow" hidden>
+        <section class="protocol-stage"><p class="protocol-number">01</p><div><p class="evidence-code">X402</p><h3>支付要求</h3><dl id="live-requirement-facts"></dl><details id="live-requirement-details" class="inline-details"><summary>查看完整支付要求</summary><dl id="live-requirement-full"></dl></details></div></section>
+        <i class="protocol-arrow">↓</i>
+        <section class="protocol-stage protocol-stage--preview"><p class="protocol-number">02</p><div><p class="evidence-code">WALLET / PREVIEW</p><h3>Binance Agentic Wallet</h3><dl id="live-wallet-preview-facts"></dl></div></section>
+        <i class="protocol-arrow">↓</i>
+        <section class="protocol-stage protocol-stage--boundary"><p class="protocol-number">03</p><div><p class="evidence-code">SETTLEMENT</p><h3>支付边界</h3><dl id="live-boundary-facts"></dl></div></section>
+      </div>
+      <p class="live-path"><span>Integration Path</span> · UI → localhost bridge → BinanceAgenticWallet bridge → BAW CLI → x402 preview</p>
+      <details id="live-provider-details" class="raw-data" hidden><summary>Provider Evidence</summary><pre id="live-provider-raw"></pre></details>
+    </section>
+
+    <svg class="botanical botanical--foot" viewBox="0 0 90 75" aria-hidden="true"><path d="M12 8c19 19 35 38 66 61M33 26c-5-11-14-13-20-10 4 9 11 13 20 10ZM51 43c10-5 17-3 21 3-9 4-16 3-21-3ZM66 57c0-8 5-12 12-12-1 7-5 11-12 12Z"/></svg>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

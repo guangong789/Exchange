@@ -1,4 +1,4 @@
-#include "exchange/binance_agentic_wallet.hpp"
+#include "exchange/binance/binance_agentic_wallet.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -15,9 +15,9 @@
 
 #include <gtest/gtest.h>
 
-#include "exchange/account_store.hpp"
-#include "exchange/ledger.hpp"
-#include "exchange/order_book.hpp"
+#include "exchange/accounting/account_store.hpp"
+#include "exchange/accounting/ledger.hpp"
+#include "exchange/matching/order_book.hpp"
 
 namespace exchange {
     namespace {

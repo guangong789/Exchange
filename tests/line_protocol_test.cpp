@@ -1,4 +1,4 @@
-#include "exchange/line_protocol.hpp"
+#include "exchange/protocol/line_protocol.hpp"
 
 #include <limits>
 #include <span>

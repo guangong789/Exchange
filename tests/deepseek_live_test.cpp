@@ -1,5 +1,5 @@
-#include "exchange/deepseek_adapter.hpp"
-#include "exchange/model_agent_policy.hpp"
+#include "exchange/model/deepseek_adapter.hpp"
+#include "exchange/model/model_agent_policy.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -10,9 +10,9 @@
 
 #include <gtest/gtest.h>
 
-#include "exchange/agent_action_gateway.hpp"
-#include "exchange/agent_observation_service.hpp"
-#include "exchange/arena.hpp"
+#include "exchange/agent/agent_action_gateway.hpp"
+#include "exchange/agent/agent_observation_service.hpp"
+#include "exchange/arena/arena.hpp"
 
 namespace exchange {
     namespace {

@@ -5,7 +5,7 @@
 #include <string_view>
 #include <system_error>
 
-#include "exchange/tcp_gateway.hpp"
+#include "exchange/gateway/tcp_gateway.hpp"
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {

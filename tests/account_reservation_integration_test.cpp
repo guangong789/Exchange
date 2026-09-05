@@ -1,5 +1,5 @@
-#include "exchange/account_store.hpp"
-#include "exchange/order_reservation_store.hpp"
+#include "exchange/accounting/account_store.hpp"
+#include "exchange/accounting/order_reservation_store.hpp"
 
 #include <gtest/gtest.h>
 

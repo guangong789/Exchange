@@ -1,4 +1,4 @@
-#include "exchange/model_agent_policy.hpp"
+#include "exchange/model/model_agent_policy.hpp"
 
 #include <deque>
 #include <stdexcept>
@@ -9,10 +9,10 @@
 
 #include <gtest/gtest.h>
 
-#include "exchange/agent_action_gateway.hpp"
-#include "exchange/agent_observation_service.hpp"
-#include "exchange/arena.hpp"
-#include "exchange/model_decision.hpp"
+#include "exchange/agent/agent_action_gateway.hpp"
+#include "exchange/agent/agent_observation_service.hpp"
+#include "exchange/arena/arena.hpp"
+#include "exchange/model/model_decision.hpp"
 
 namespace exchange {
     namespace {
@@ -115,6 +115,7 @@ namespace exchange {
                 Balance{1, 2},
                 Balance{7, 3},
                 ObjectiveProgress{agent_a, 20, 1, 4, false},
+                ExternalMarketSnapshot{"BTCUSDT", 6'000'000, 6'000'100},
             };
 
             EXPECT_EQ(
@@ -140,6 +141,10 @@ namespace exchange {
             EXPECT_NE(request.user_prompt.find("Best bid: 90"),
                       std::string::npos);
             EXPECT_NE(request.user_prompt.find("Best ask: 95"),
+                      std::string::npos);
+            EXPECT_NE(request.user_prompt.find(
+                          "External market: symbol=BTCUSDT, best bid=6000000, "
+                          "best ask=6000100"),
                       std::string::npos);
             EXPECT_NE(request.user_prompt.find("target asset=20"),
                       std::string::npos);

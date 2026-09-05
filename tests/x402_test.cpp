@@ -1,4 +1,4 @@
-#include "exchange/x402.hpp"
+#include "exchange/x402/x402.hpp"
 
 #include <array>
 #include <cerrno>
@@ -17,9 +17,9 @@
 
 #include <gtest/gtest.h>
 
-#include "exchange/account_store.hpp"
-#include "exchange/ledger.hpp"
-#include "exchange/order_book.hpp"
+#include "exchange/accounting/account_store.hpp"
+#include "exchange/accounting/ledger.hpp"
+#include "exchange/matching/order_book.hpp"
 
 namespace exchange {
     namespace {

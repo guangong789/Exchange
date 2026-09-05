@@ -1,21 +1,240 @@
-#include "exchange/binance_agent_os_client.hpp"
+#include "exchange/binance/binance_agent_os_client.hpp"
 
 #include <limits>
+#include <cerrno>
+#include <cstring>
+#include <cstdlib>
+#include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
+#include <vector>
+#include <string_view>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
-#include "exchange/account_store.hpp"
-#include "exchange/agent_observation_service.hpp"
-#include "exchange/agent_registry.hpp"
-#include "exchange/ledger.hpp"
-#include "exchange/order_book.hpp"
+#include "exchange/accounting/account_store.hpp"
+#include "exchange/agent/agent_observation_service.hpp"
+#include "exchange/agent/agent_registry.hpp"
+#include "exchange/accounting/ledger.hpp"
+#include "exchange/matching/order_book.hpp"
 
 namespace exchange {
     namespace {
+        class ScopedEnvironmentVariable final {
+        public:
+            ScopedEnvironmentVariable(
+                const char* name,
+                std::optional<std::string> value)
+                : name_(name) {
+                if (const char* existing = std::getenv(name_)) {
+                    previous_value_ = existing;
+                }
+                if (value.has_value()) {
+                    if (::setenv(name_, value->c_str(), 1) != 0) {
+                        throw std::runtime_error("failed to set test environment");
+                    }
+                } else if (::unsetenv(name_) != 0) {
+                    throw std::runtime_error("failed to unset test environment");
+                }
+            }
+
+            ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+            ScopedEnvironmentVariable& operator=(
+                const ScopedEnvironmentVariable&) = delete;
+
+            ~ScopedEnvironmentVariable() {
+                if (previous_value_.has_value()) {
+                    static_cast<void>(::setenv(
+                        name_, previous_value_->c_str(), 1));
+                } else {
+                    static_cast<void>(::unsetenv(name_));
+                }
+            }
+
+        private:
+            const char* name_;
+            std::optional<std::string> previous_value_;
+        };
+
+        class LocalMcpServer final {
+        public:
+            LocalMcpServer() {
+                listen_fd_ = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+                if (listen_fd_ < 0) {
+                    throw std::runtime_error("failed to create test socket");
+                }
+
+                sockaddr_in address{};
+                address.sin_family = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port = 0;
+                if (::bind(
+                        listen_fd_,
+                        reinterpret_cast<const sockaddr*>(&address),
+                        sizeof(address))
+                        != 0
+                    || ::listen(listen_fd_, 4) != 0) {
+                    const int error = errno;
+                    static_cast<void>(::close(listen_fd_));
+                    listen_fd_ = -1;
+                    throw std::runtime_error(
+                        std::string("failed to bind test socket: ")
+                        + std::strerror(error));
+                }
+
+                socklen_t size = sizeof(address);
+                if (::getsockname(
+                        listen_fd_,
+                        reinterpret_cast<sockaddr*>(&address),
+                        &size)
+                    != 0) {
+                    const int error = errno;
+                    static_cast<void>(::close(listen_fd_));
+                    listen_fd_ = -1;
+                    throw std::runtime_error(
+                        std::string("failed to inspect test socket: ")
+                        + std::strerror(error));
+                }
+                endpoint_ = "http://127.0.0.1:"
+                    + std::to_string(ntohs(address.sin_port));
+                thread_ = std::thread([this] { serve(); });
+            }
+
+            LocalMcpServer(const LocalMcpServer&) = delete;
+            LocalMcpServer& operator=(const LocalMcpServer&) = delete;
+
+            ~LocalMcpServer() {
+                if (listen_fd_ >= 0) {
+                    static_cast<void>(::shutdown(listen_fd_, SHUT_RDWR));
+                    static_cast<void>(::close(listen_fd_));
+                    listen_fd_ = -1;
+                }
+                if (thread_.joinable()) {
+                    thread_.join();
+                }
+            }
+
+            [[nodiscard]] const std::string& endpoint() const noexcept {
+                return endpoint_;
+            }
+
+            [[nodiscard]] std::vector<std::string> wait_for_requests() {
+                if (thread_.joinable()) {
+                    thread_.join();
+                }
+                if (failure_) {
+                    std::rethrow_exception(failure_);
+                }
+                return requests_;
+            }
+
+        private:
+            [[nodiscard]] static std::string read_request(int fd) {
+                std::string request;
+                char buffer[4096];
+                std::size_t body_size = 0;
+                for (;;) {
+                    const ssize_t received = ::recv(fd, buffer, sizeof(buffer), 0);
+                    if (received <= 0) {
+                        throw std::runtime_error("incomplete test HTTP request");
+                    }
+                    request.append(buffer, static_cast<std::size_t>(received));
+                    const std::size_t header_end = request.find("\r\n\r\n");
+                    if (header_end == std::string::npos) {
+                        continue;
+                    }
+                    const std::size_t length_start = request.find(
+                        "Content-Length:");
+                    if (length_start == std::string::npos) {
+                        throw std::runtime_error("test request has no content length");
+                    }
+                    const std::size_t value_start = length_start
+                        + std::string("Content-Length:").size();
+                    const std::size_t value_end = request.find("\r\n", value_start);
+                    body_size = static_cast<std::size_t>(std::stoull(
+                        request.substr(value_start, value_end - value_start)));
+                    if (request.size() >= header_end + 4 + body_size) {
+                        return request;
+                    }
+                }
+            }
+
+            static void send_all(int fd, std::string_view response) {
+                std::size_t offset = 0;
+                while (offset < response.size()) {
+                    const ssize_t sent = ::send(
+                        fd,
+                        response.data() + offset,
+                        response.size() - offset,
+                        MSG_NOSIGNAL);
+                    if (sent <= 0) {
+                        throw std::runtime_error("failed to send test response");
+                    }
+                    offset += static_cast<std::size_t>(sent);
+                }
+            }
+
+            static std::string response_for(std::size_t request_index) {
+                static constexpr std::string_view bodies[] = {
+                    R"({"jsonrpc":"2.0","id":1,"result":{}})",
+                    R"({"jsonrpc":"2.0","result":{}})",
+                    R"({"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"book_ticker","description":"best bid best ask","annotations":{"readOnlyHint":true},"inputSchema":{"type":"object","properties":{"symbol":{"type":"string"}}}}]}})",
+                    R"({"jsonrpc":"2.0","id":3,"result":{"structuredContent":{"symbol":"BTCUSDT","bidPrice":"100.00","askPrice":"101.00"}}})",
+                };
+                const std::string_view body = bodies[request_index];
+                return "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Mcp-Session-Id: local-test-session\r\n"
+                    "Content-Length: " + std::to_string(body.size())
+                    + "\r\nConnection: close\r\n\r\n" + std::string(body);
+            }
+
+            void serve() noexcept {
+                try {
+                    for (std::size_t index = 0; index < 4; ++index) {
+                        const int client_fd = ::accept4(
+                            listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
+                        if (client_fd < 0) {
+                            throw std::runtime_error("failed to accept test request");
+                        }
+                        try {
+                            requests_.push_back(read_request(client_fd));
+                            send_all(client_fd, response_for(index));
+                        } catch (...) {
+                            static_cast<void>(::close(client_fd));
+                            throw;
+                        }
+                        static_cast<void>(::close(client_fd));
+                    }
+                } catch (...) {
+                    failure_ = std::current_exception();
+                }
+            }
+
+            int listen_fd_{-1};
+            std::string endpoint_;
+            std::thread thread_;
+            std::vector<std::string> requests_;
+            std::exception_ptr failure_;
+        };
+
+        [[nodiscard]] bool has_authorization_header(
+            const std::string& request,
+            std::string_view expected_value) {
+            return request.find(
+                "Authorization: Bearer " + std::string(expected_value)
+                + "\r\n") != std::string::npos;
+        }
+
         class FakeBinanceAgentOsClient final : public BinanceAgentOsClient {
         public:
             explicit FakeBinanceAgentOsClient(ExternalMarketSnapshot snapshot)
@@ -151,6 +370,47 @@ namespace exchange {
                     100,
                     std::chrono::milliseconds(0)}),
                 std::invalid_argument);
+        }
+
+        TEST(BinanceMcpClientAuthTest,
+             OmitsAuthorizationForNoTokenMarketDataRequest) {
+            ScopedEnvironmentVariable no_token(
+                "BINANCE_AGENT_OS_ACCESS_TOKEN", std::nullopt);
+            LocalMcpServer server;
+            BinanceMcpClient client(BinanceMcpConfig{
+                server.endpoint(), 100, std::chrono::seconds(1)});
+
+            EXPECT_EQ(
+                client.fetch_market_snapshot("BTCUSDT"),
+                (ExternalMarketSnapshot{"BTCUSDT", 10'000, 10'100}));
+
+            const std::vector<std::string> requests =
+                server.wait_for_requests();
+            ASSERT_EQ(requests.size(), 4U);
+            for (const std::string& request : requests) {
+                EXPECT_EQ(request.find("Authorization:"), std::string::npos);
+            }
+        }
+
+        TEST(BinanceMcpClientAuthTest,
+             SendsBearerAuthorizationForConfiguredToken) {
+            constexpr std::string_view token = "unit-test-token";
+            ScopedEnvironmentVariable configured_token(
+                "BINANCE_AGENT_OS_ACCESS_TOKEN", std::string(token));
+            LocalMcpServer server;
+            BinanceMcpClient client(BinanceMcpConfig{
+                server.endpoint(), 100, std::chrono::seconds(1)});
+
+            EXPECT_EQ(
+                client.fetch_market_snapshot("BTCUSDT"),
+                (ExternalMarketSnapshot{"BTCUSDT", 10'000, 10'100}));
+
+            const std::vector<std::string> requests =
+                server.wait_for_requests();
+            ASSERT_EQ(requests.size(), 4U);
+            for (const std::string& request : requests) {
+                EXPECT_TRUE(has_authorization_header(request, token));
+            }
         }
 
         TEST(BinanceAgentOsObservationBridgeTest,

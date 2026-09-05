@@ -1,8 +1,8 @@
-#include "exchange/agent.hpp"
-#include "exchange/agent_action_gateway.hpp"
-#include "exchange/agent_observation_service.hpp"
-#include "exchange/agent_registry.hpp"
-#include "exchange/funding_coordinator.hpp"
+#include "exchange/agent/agent.hpp"
+#include "exchange/agent/agent_action_gateway.hpp"
+#include "exchange/agent/agent_observation_service.hpp"
+#include "exchange/agent/agent_registry.hpp"
+#include "exchange/accounting/funding_coordinator.hpp"
 
 #include <stdexcept>
 #include <type_traits>

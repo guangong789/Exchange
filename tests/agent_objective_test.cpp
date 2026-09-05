@@ -1,7 +1,7 @@
-#include "exchange/agent_objective.hpp"
-#include "exchange/agent_observation_service.hpp"
-#include "exchange/event_collector.hpp"
-#include "exchange/matching_engine.hpp"
+#include "exchange/agent/agent_objective.hpp"
+#include "exchange/agent/agent_observation_service.hpp"
+#include "exchange/matching/event_collector.hpp"
+#include "exchange/matching/matching_engine.hpp"
 
 #include <limits>
 #include <stdexcept>

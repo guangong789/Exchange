@@ -1,4 +1,4 @@
-#include "exchange/binance_agent_os_client.hpp"
+#include "exchange/binance/binance_agent_os_client.hpp"
 
 #include <cstdlib>
 #include <string>
@@ -11,8 +11,10 @@ namespace exchange {
             "BINANCE_AGENT_OS_ACCESS_TOKEN");
         if (access_token == nullptr || access_token[0] == '\0') {
             GTEST_SKIP()
-                << "BINANCE_AGENT_OS_ACCESS_TOKEN is not set; complete the "
-                   "official Binance Agent OS OAuth flow first";
+                << "Binance Agent OS MCP currently requires OAuth access "
+                   "token to establish a session; set "
+                   "BINANCE_AGENT_OS_ACCESS_TOKEN after the official OAuth "
+                   "flow";
         }
         const char* configured_symbol = std::getenv(
             "BINANCE_AGENT_OS_SYMBOL");

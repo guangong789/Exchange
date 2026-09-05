@@ -1,5 +1,5 @@
-#include "exchange/arena.hpp"
-#include "exchange/funding_coordinator.hpp"
+#include "exchange/arena/arena.hpp"
+#include "exchange/accounting/funding_coordinator.hpp"
 
 #include <initializer_list>
 #include <stdexcept>
