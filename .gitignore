@@ -16,6 +16,10 @@
 /compile_commands.json
 /.cache/
 
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
 # Compiled C/C++ artifacts
 *.o
 *.obj

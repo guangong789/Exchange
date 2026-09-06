@@ -268,49 +268,49 @@ if(EXCHANGE_BUILD_TESTS)
     endif()
 
     set(EXCHANGE_TEST_SOURCES
-        tests/account_reservation_integration_test.cpp
-        tests/account_store_test.cpp
-        tests/agent_foundation_test.cpp
-        tests/agent_objective_test.cpp
-        tests/arena_test.cpp
-        tests/bounded_queue_test.cpp
-        tests/binance_agent_os_test.cpp
-        tests/execution_coordinator_test.cpp
-        tests/event_system_test.cpp
-        tests/financial_conversion_test.cpp
-        tests/funding_coordinator_test.cpp
-        tests/hackathon_demo_test.cpp
-        tests/live_x402_evidence_test.cpp
-        tests/line_protocol_test.cpp
-        tests/ledger_test.cpp
-        tests/model_agent_policy_test.cpp
-        tests/model_decision_test.cpp
-        tests/order_book_test.cpp
-        tests/order_reservation_store_test.cpp
-        tests/replay_engine_test.cpp
-        tests/workload_generator_test.cpp
+        tests/accounting/account_reservation_integration_test.cpp
+        tests/accounting/account_store_test.cpp
+        tests/agent/agent_foundation_test.cpp
+        tests/agent/agent_objective_test.cpp
+        tests/arena/arena_test.cpp
+        tests/core/bounded_queue_test.cpp
+        tests/binance/binance_agent_os_test.cpp
+        tests/accounting/execution_coordinator_test.cpp
+        tests/matching/event_system_test.cpp
+        tests/accounting/financial_conversion_test.cpp
+        tests/accounting/funding_coordinator_test.cpp
+        tests/hackathon/hackathon_demo_test.cpp
+        tests/hackathon/live_x402_evidence_test.cpp
+        tests/protocol/line_protocol_test.cpp
+        tests/accounting/ledger_test.cpp
+        tests/model/model_agent_policy_test.cpp
+        tests/model/model_decision_test.cpp
+        tests/matching/order_book_test.cpp
+        tests/accounting/order_reservation_store_test.cpp
+        tests/replay/replay_engine_test.cpp
+        tests/replay/workload_generator_test.cpp
     )
     if(TARGET exchange_gateway)
         list(APPEND EXCHANGE_TEST_SOURCES
-            tests/epoll_server_test.cpp
-            tests/tcp_gateway_test.cpp
+            tests/gateway/epoll_server_test.cpp
+            tests/gateway/tcp_gateway_test.cpp
         )
     endif()
     if(TARGET exchange_x402)
-        list(APPEND EXCHANGE_TEST_SOURCES tests/x402_test.cpp)
+        list(APPEND EXCHANGE_TEST_SOURCES tests/x402/x402_test.cpp)
     endif()
     if(TARGET exchange_binance_agentic_wallet)
         list(APPEND EXCHANGE_TEST_SOURCES
-            tests/binance_agentic_wallet_test.cpp)
+            tests/binance/binance_agentic_wallet_test.cpp)
     endif()
     if(EXCHANGE_ENABLE_LIVE_MODEL_TESTS)
         list(APPEND EXCHANGE_TEST_SOURCES
-            tests/deepseek_live_test.cpp
-            tests/hackathon_demo_live_test.cpp)
+            tests/model/deepseek_live_test.cpp
+            tests/hackathon/hackathon_demo_live_test.cpp)
     endif()
     if(EXCHANGE_ENABLE_BINANCE_AGENT_OS_TESTS)
         list(APPEND EXCHANGE_TEST_SOURCES
-            tests/binance_agent_os_live_test.cpp)
+            tests/binance/binance_agent_os_live_test.cpp)
     endif()
     if(EXCHANGE_ENABLE_BINANCE_WALLET_TESTS)
         if(NOT TARGET exchange_binance_agentic_wallet)
@@ -318,7 +318,7 @@ if(EXCHANGE_BUILD_TESTS)
                 "Binance Agentic Wallet live tests require Linux")
         endif()
         list(APPEND EXCHANGE_TEST_SOURCES
-            tests/binance_agentic_wallet_live_test.cpp)
+            tests/binance/binance_agentic_wallet_live_test.cpp)
     endif()
 
     add_executable(exchange_test ${EXCHANGE_TEST_SOURCES})
