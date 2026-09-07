@@ -3,6 +3,7 @@
 #include <cstdint>
 
 namespace exchange {
+    using RequestId = std::uint64_t;
     using OrderId = std::uint64_t;
     using Price = std::int64_t;
     using Quantity = std::int64_t;

@@ -75,4 +75,9 @@ namespace exchange {
         reservations_.erase(reservation);
         return removed;
     }
+
+    const std::map<OrderId, OrderReservation>&
+    OrderReservationStore::entries() const noexcept {
+        return reservations_;
+    }
 }  // namespace exchange

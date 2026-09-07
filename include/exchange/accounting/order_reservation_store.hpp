@@ -39,6 +39,9 @@ namespace exchange {
         // by a higher-level component.
         [[nodiscard]] OrderReservation remove(OrderId order_id);
 
+        [[nodiscard]] const std::map<OrderId, OrderReservation>& entries()
+            const noexcept;
+
     private:
         std::map<OrderId, OrderReservation> reservations_;
     };

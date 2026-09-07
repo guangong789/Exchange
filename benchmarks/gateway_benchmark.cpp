@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -53,6 +54,10 @@ namespace exchange {
             1, 4, 16, 64};
         constexpr Price kOrderPrice = 100'000;
         constexpr Quantity kOrderQuantity = 10;
+        constexpr AccountId kSellerAccountId = 1;
+        constexpr AccountId kBuyerAccountId = 2;
+        constexpr Amount kBenchmarkInitialBalance =
+            1'000'000'000'000'000;
         constexpr std::chrono::seconds kNoProgressTimeout{30};
         constexpr int kPollIntervalMilliseconds = 100;
         constexpr std::size_t kReceiveBufferSize = 16 * 1024;
@@ -62,6 +67,28 @@ namespace exchange {
             "command-admission-overload-v1";
         constexpr std::string_view kSlowReaderWorkloadName =
             "slow-reader-output-limit-v1";
+
+        std::unique_ptr<TradingRuntime> make_benchmark_runtime() {
+            constexpr InstrumentContext instrument{20, 10, 1, 1, 1};
+            auto runtime = std::make_unique<TradingRuntime>(instrument);
+            for (const AccountId account_id : {
+                     kSellerAccountId,
+                     kBuyerAccountId}) {
+                if (!runtime->accounts().create_account(account_id)) {
+                    throw std::logic_error(
+                        "duplicate benchmark bootstrap account");
+                }
+                runtime->accounts().fund(
+                    account_id,
+                    instrument.base_asset,
+                    kBenchmarkInitialBalance);
+                runtime->accounts().fund(
+                    account_id,
+                    instrument.quote_asset,
+                    kBenchmarkInitialBalance);
+            }
+            return runtime;
+        }
 
         enum class Scenario {
             Throughput,
@@ -79,8 +106,13 @@ namespace exchange {
             bool clients_were_explicit{};
         };
 
+        struct BenchmarkRequest {
+            RequestId request_id{};
+            std::string wire;
+        };
+
         struct Workload {
-            std::vector<std::vector<std::string>> requests_by_client;
+            std::vector<std::vector<BenchmarkRequest>> requests_by_client;
             std::size_t command_count{};
             std::size_t expected_trade_count{};
         };
@@ -143,6 +175,7 @@ namespace exchange {
                     kDefaultResponseQueueCapacity)
                 : gateway_(
                       0,
+                      make_benchmark_runtime(),
                       command_queue_capacity,
                       response_queue_capacity),
                   io_thread_([this] { run_io_loop(); }) {}
@@ -201,8 +234,76 @@ namespace exchange {
             std::thread io_thread_;
         };
 
+        template <typename Integer>
+        [[nodiscard]] bool parse_integer(
+            std::string_view token,
+            Integer& value) {
+            const auto [parsed_to, error] = std::from_chars(
+                token.data(), token.data() + token.size(), value);
+            return !token.empty() && error == std::errc{} &&
+                parsed_to == token.data() + token.size();
+        }
+
+        struct ResponseTokens {
+            std::array<std::string_view, 7> values{};
+            std::size_t size{};
+
+            [[nodiscard]] std::string_view operator[](
+                std::size_t index) const noexcept {
+                return values[index];
+            }
+        };
+
+        [[nodiscard]] ResponseTokens split_tokens(
+            std::string_view line) {
+            ResponseTokens tokens;
+            if (line.empty() || line.front() == ' ' || line.back() == ' ') {
+                return tokens;
+            }
+            std::size_t start = 0;
+            while (start < line.size()) {
+                const std::size_t separator = line.find(' ', start);
+                const std::size_t end = separator == std::string_view::npos
+                    ? line.size()
+                    : separator;
+                if (end == start) {
+                    return {};
+                }
+                if (tokens.size == tokens.values.size()) {
+                    return {};
+                }
+                tokens.values[tokens.size++] =
+                    line.substr(start, end - start);
+                if (separator == std::string_view::npos) {
+                    break;
+                }
+                start = separator + 1;
+            }
+            return tokens;
+        }
+
+        struct ResponseBookkeeping {
+            explicit ResponseBookkeeping(std::size_t expected_orders) {
+                assigned_order_ids.reserve(expected_orders);
+                accepted_order_ids.reserve(expected_orders);
+                terminal_order_ids.reserve(expected_orders);
+            }
+
+            std::vector<OrderId> assigned_order_ids;
+            std::vector<OrderId> accepted_order_ids;
+            std::vector<OrderId> terminal_order_ids;
+            std::size_t trade_count{};
+        };
+
         class ResponseParser {
         public:
+            explicit ResponseParser(ResponseBookkeeping& bookkeeping) noexcept
+                : bookkeeping_(bookkeeping) {}
+
+            void expect_response(RequestId request_id) {
+                expected_request_ids_.push_back(request_id);
+            }
+
             void append(std::string_view bytes) {
                 buffer_.append(bytes);
                 parse_available_lines();
@@ -212,13 +313,10 @@ namespace exchange {
                 return completed_responses_;
             }
 
-            [[nodiscard]] std::size_t trade_count() const noexcept {
-                return trade_count_;
-            }
-
             [[nodiscard]] bool idle() const noexcept {
                 return remaining_event_lines_ == 0 &&
-                       read_position_ == buffer_.size();
+                    expected_request_ids_.empty() &&
+                    read_position_ == buffer_.size();
             }
 
         private:
@@ -251,13 +349,7 @@ namespace exchange {
 
             void parse_line(std::string_view line) {
                 if (remaining_event_lines_ != 0) {
-                    if (!line.starts_with("EVENT ")) {
-                        throw std::runtime_error(
-                            "expected EVENT line in gateway response");
-                    }
-                    if (line.starts_with("EVENT TRADE_CREATED ")) {
-                        ++trade_count_;
-                    }
+                    parse_event(line);
 
                     --remaining_event_lines_;
                     if (remaining_event_lines_ == 0) {
@@ -271,27 +363,127 @@ namespace exchange {
                         "gateway returned protocol error: " +
                         std::string{line});
                 }
-                if (!line.starts_with("OK ")) {
+                const ResponseTokens tokens =
+                    split_tokens(line);
+                if (tokens.size != 5 || tokens[0] != "RESULT") {
                     throw std::runtime_error(
                         "invalid gateway response header");
                 }
-
-                const std::string_view count_text = line.substr(3);
+                RequestId request_id{};
+                OrderId assigned_order_id{};
                 std::size_t event_count = 0;
-                const auto [parsed_to, error] = std::from_chars(
-                    count_text.data(),
-                    count_text.data() + count_text.size(),
-                    event_count);
-                if (error != std::errc{} ||
-                    parsed_to != count_text.data() + count_text.size()) {
+                if (!parse_integer(tokens[1], request_id) ||
+                    tokens[2] != "ACCEPTED" ||
+                    !parse_integer(tokens[3], assigned_order_id) ||
+                    assigned_order_id == 0 ||
+                    !parse_integer(tokens[4], event_count) ||
+                    event_count == 0) {
                     throw std::runtime_error(
-                        "invalid event count in gateway response");
+                        "unexpected benchmark execution result");
                 }
+                if (expected_request_ids_.empty() ||
+                    expected_request_ids_.front() != request_id) {
+                    throw std::runtime_error(
+                        "gateway response request ID mismatch");
+                }
+                expected_request_ids_.pop_front();
+                bookkeeping_.assigned_order_ids.push_back(assigned_order_id);
 
+                current_assigned_order_id_ = assigned_order_id;
                 remaining_event_lines_ = event_count;
                 if (remaining_event_lines_ == 0) {
                     ++completed_responses_;
                 }
+            }
+
+            void parse_event(std::string_view line) {
+                const ResponseTokens tokens =
+                    split_tokens(line);
+                if (tokens.size < 3 || tokens[0] != "EVENT") {
+                    throw std::runtime_error(
+                        "expected EVENT line in gateway response");
+                }
+
+                OrderId order_id{};
+                if (tokens[1] == "ORDER_ACCEPTED") {
+                    if (tokens.size != 7 ||
+                        !parse_integer(tokens[2], order_id) ||
+                        order_id != current_assigned_order_id_ ||
+                        (tokens[3] != "BUY" && tokens[3] != "SELL")) {
+                        throw std::runtime_error(
+                            "invalid ORDER_ACCEPTED event");
+                    }
+                    Price price{};
+                    Quantity quantity{};
+                    Timestamp timestamp{};
+                    if (!parse_integer(tokens[4], price) || price <= 0 ||
+                        !parse_integer(tokens[5], quantity) || quantity <= 0 ||
+                        !parse_integer(tokens[6], timestamp) || timestamp <= 0) {
+                        throw std::runtime_error(
+                            "invalid accepted order event");
+                    }
+                    bookkeeping_.accepted_order_ids.push_back(order_id);
+                    return;
+                }
+
+                if (tokens[1] == "TRADE_CREATED") {
+                    OrderId counterparty_order_id{};
+                    Price price{};
+                    Quantity quantity{};
+                    Timestamp timestamp{};
+                    if (tokens.size != 7 ||
+                        !parse_integer(tokens[2], order_id) ||
+                        !parse_integer(tokens[3], counterparty_order_id) ||
+                        order_id == 0 || counterparty_order_id == 0 ||
+                        !parse_integer(tokens[4], price) || price <= 0 ||
+                        !parse_integer(tokens[5], quantity) || quantity <= 0 ||
+                        !parse_integer(tokens[6], timestamp) || timestamp <= 0) {
+                        throw std::runtime_error("invalid TRADE_CREATED event");
+                    }
+                    ++bookkeeping_.trade_count;
+                    return;
+                }
+
+                if (tokens[1] == "ORDER_FILLED") {
+                    Quantity filled_quantity{};
+                    if (tokens.size != 5 ||
+                        !parse_integer(tokens[2], order_id) ||
+                        (tokens[3] != "BUY" && tokens[3] != "SELL") ||
+                        !parse_integer(tokens[4], filled_quantity) ||
+                        filled_quantity <= 0) {
+                        throw std::runtime_error("invalid ORDER_FILLED event");
+                    }
+                    bookkeeping_.terminal_order_ids.push_back(order_id);
+                    return;
+                }
+
+                if (tokens[1] == "ORDER_PARTIALLY_FILLED") {
+                    Quantity filled_quantity{};
+                    Quantity remaining_quantity{};
+                    if (tokens.size != 6 ||
+                        !parse_integer(tokens[2], order_id) ||
+                        (tokens[3] != "BUY" && tokens[3] != "SELL") ||
+                        !parse_integer(tokens[4], filled_quantity) ||
+                        filled_quantity <= 0 ||
+                        !parse_integer(tokens[5], remaining_quantity) ||
+                        remaining_quantity <= 0) {
+                        throw std::runtime_error(
+                            "invalid ORDER_PARTIALLY_FILLED event");
+                    }
+                    return;
+                }
+
+                if (tokens[1] == "ORDER_CANCELLED") {
+                    if (tokens.size != 7 ||
+                        !parse_integer(tokens[2], order_id) ||
+                        (tokens[3] != "BUY" && tokens[3] != "SELL")) {
+                        throw std::runtime_error("invalid ORDER_CANCELLED event");
+                    }
+                    bookkeeping_.terminal_order_ids.push_back(order_id);
+                    return;
+                }
+
+                throw std::runtime_error("unknown gateway event type");
             }
 
             void compact() {
@@ -309,10 +501,12 @@ namespace exchange {
             }
 
             std::string buffer_;
+            ResponseBookkeeping& bookkeeping_;
+            std::deque<RequestId> expected_request_ids_;
             std::size_t read_position_{};
             std::size_t remaining_event_lines_{};
             std::size_t completed_responses_{};
-            std::size_t trade_count_{};
+            OrderId current_assigned_order_id_{};
         };
 
         class CapturedResponseParser {
@@ -371,21 +565,22 @@ namespace exchange {
                             "healthy client received protocol error: " +
                             std::string{line});
                     }
-                    if (!line.starts_with("OK ")) {
+                    const ResponseTokens tokens =
+                        split_tokens(line);
+                    if (tokens.size != 5 || tokens[0] != "RESULT") {
                         throw std::runtime_error(
                             "invalid stress response header");
                     }
 
-                    const std::string_view count_text = line.substr(3);
+                    RequestId request_id{};
+                    OrderId assigned_order_id{};
                     std::size_t event_count = 0;
-                    const auto [parsed_to, error] = std::from_chars(
-                        count_text.data(),
-                        count_text.data() + count_text.size(),
-                        event_count);
-                    if (error != std::errc{} ||
-                        parsed_to != count_text.data() + count_text.size()) {
+                    if (!parse_integer(tokens[1], request_id) ||
+                        request_id == 0 || tokens[2].empty() ||
+                        !parse_integer(tokens[3], assigned_order_id) ||
+                        !parse_integer(tokens[4], event_count)) {
                         throw std::runtime_error(
-                            "invalid stress response event count");
+                            "invalid stress response fields");
                     }
 
                     current_response_.assign(line);
@@ -480,14 +675,16 @@ namespace exchange {
         struct ClientPhaseState {
             ClientPhaseState(
                 int client_fd,
-                const std::vector<std::string>& assigned_requests,
-                std::size_t outstanding_window)
+                const std::vector<BenchmarkRequest>& assigned_requests,
+                std::size_t outstanding_window,
+                ResponseBookkeeping& bookkeeping)
                 : fd(client_fd),
                   requests(&assigned_requests),
+                  parser(bookkeeping),
                   outstanding(outstanding_window) {}
 
             int fd{-1};
-            const std::vector<std::string>* requests{};
+            const std::vector<BenchmarkRequest>* requests{};
             std::size_t next_request{};
             std::size_t request_offset{};
             std::size_t sent_commands{};
@@ -725,14 +922,14 @@ namespace exchange {
                     "--warmup-commands must be a positive even number");
             }
 
-            const std::size_t maximum_logical_id =
+            const std::size_t maximum_request_id =
                 static_cast<std::size_t>(
-                    std::numeric_limits<Timestamp>::max());
-            if (config.warmup_command_count > maximum_logical_id ||
+                    std::numeric_limits<RequestId>::max());
+            if (config.warmup_command_count > maximum_request_id ||
                 config.command_count >
-                    maximum_logical_id - config.warmup_command_count) {
+                    maximum_request_id - config.warmup_command_count) {
                 throw std::invalid_argument(
-                    "combined workload exceeds OrderId/Timestamp range");
+                    "combined workload exceeds RequestId range");
             }
             if (config.command_count >
                 std::numeric_limits<std::size_t>::max() /
@@ -744,42 +941,37 @@ namespace exchange {
         }
 
         [[nodiscard]] std::string make_add_request(
-            OrderId order_id,
+            RequestId request_id,
+            AccountId account_id,
             std::string_view side,
             Price price,
-            Quantity quantity,
-            Timestamp timestamp) {
+            Quantity quantity) {
             std::string output = "ADD ";
-            output += std::to_string(order_id);
+            output += std::to_string(request_id);
+            output += ' ';
+            output += std::to_string(account_id);
             output += ' ';
             output += side;
             output += ' ';
             output += std::to_string(price);
             output += ' ';
             output += std::to_string(quantity);
-            output += ' ';
-            output += std::to_string(timestamp);
             output += '\n';
             return output;
         }
 
-        void append_order_request(
-            std::string& output,
-            OrderId order_id,
-            std::string_view side,
-            Timestamp timestamp) {
-            output = make_add_request(
-                order_id,
-                side,
-                kOrderPrice,
-                kOrderQuantity,
-                timestamp);
+        [[nodiscard]] std::string make_cancel_request(
+            RequestId request_id,
+            AccountId account_id,
+            OrderId order_id) {
+            return "CANCEL " + std::to_string(request_id) + " " +
+                std::to_string(account_id) + " " +
+                std::to_string(order_id) + "\n";
         }
 
         [[nodiscard]] Workload make_paired_cross_workload(
             std::size_t command_count,
-            OrderId first_order_id,
-            Timestamp first_timestamp,
+            RequestId first_request_id,
             std::size_t client_count) {
             Workload workload;
             workload.requests_by_client.resize(client_count);
@@ -799,21 +991,26 @@ namespace exchange {
                 const std::size_t client_index = pair_index % client_count;
                 auto& requests = workload.requests_by_client[client_index];
 
-                std::string sell_request;
-                append_order_request(
-                    sell_request,
-                    first_order_id + offset,
-                    "SELL",
-                    first_timestamp + static_cast<Timestamp>(offset));
-                requests.push_back(std::move(sell_request));
+                const RequestId sell_request_id =
+                    first_request_id + offset;
+                requests.push_back(BenchmarkRequest{
+                    sell_request_id,
+                    make_add_request(
+                        sell_request_id,
+                        kSellerAccountId,
+                        "SELL",
+                        kOrderPrice,
+                        kOrderQuantity)});
 
-                std::string buy_request;
-                append_order_request(
-                    buy_request,
-                    first_order_id + offset + 1,
-                    "BUY",
-                    first_timestamp + static_cast<Timestamp>(offset + 1));
-                requests.push_back(std::move(buy_request));
+                const RequestId buy_request_id = sell_request_id + 1;
+                requests.push_back(BenchmarkRequest{
+                    buy_request_id,
+                    make_add_request(
+                        buy_request_id,
+                        kBuyerAccountId,
+                        "BUY",
+                        kOrderPrice,
+                        kOrderQuantity)});
             }
             return workload;
         }
@@ -1054,7 +1251,9 @@ namespace exchange {
                 fd, parser, deadline, gateway);
             if (actual != expected) {
                 throw std::runtime_error(
-                    "healthy client received an unexpected or misrouted response");
+                    "healthy client received an unexpected or misrouted "
+                    "response; expected: " + std::string{expected} +
+                    "actual: " + actual);
             }
         }
 
@@ -1126,24 +1325,30 @@ namespace exchange {
         }
 
         [[nodiscard]] std::string accepted_response(
+            RequestId request_id,
             OrderId order_id,
             std::string_view side,
             Price price,
             Quantity quantity,
             Timestamp timestamp) {
-            return "OK 1\nEVENT ORDER_ACCEPTED " +
+            return "RESULT " + std::to_string(request_id) +
+                " ACCEPTED " + std::to_string(order_id) +
+                " 1\nEVENT ORDER_ACCEPTED " +
                 std::to_string(order_id) + " " + std::string{side} + " " +
                 std::to_string(price) + " " + std::to_string(quantity) +
                 " " + std::to_string(timestamp) + "\n";
         }
 
         [[nodiscard]] std::string full_match_response(
+            RequestId request_id,
             OrderId buy_order_id,
             OrderId sell_order_id,
             Price price,
             Quantity quantity,
             Timestamp buy_timestamp) {
-            return "OK 4\nEVENT ORDER_ACCEPTED " +
+            return "RESULT " + std::to_string(request_id) +
+                " ACCEPTED " + std::to_string(buy_order_id) +
+                " 4\nEVENT ORDER_ACCEPTED " +
                 std::to_string(buy_order_id) + " BUY " +
                 std::to_string(price) + " " + std::to_string(quantity) +
                 " " + std::to_string(buy_timestamp) +
@@ -1160,13 +1365,42 @@ namespace exchange {
                 std::to_string(quantity) + "\n";
         }
 
+        [[nodiscard]] OrderId response_assigned_order_id(
+            std::string_view response,
+            RequestId expected_request_id,
+            std::size_t expected_event_count) {
+            const std::size_t newline = response.find('\n');
+            if (newline == std::string_view::npos) {
+                throw std::runtime_error("stress response has no header line");
+            }
+            const ResponseTokens tokens =
+                split_tokens(response.substr(0, newline));
+            RequestId request_id{};
+            OrderId assigned_order_id{};
+            std::size_t event_count{};
+            if (tokens.size != 5 || tokens[0] != "RESULT" ||
+                !parse_integer(tokens[1], request_id) ||
+                request_id != expected_request_id ||
+                tokens[2] != "ACCEPTED" ||
+                !parse_integer(tokens[3], assigned_order_id) ||
+                assigned_order_id == 0 ||
+                !parse_integer(tokens[4], event_count) ||
+                event_count != expected_event_count) {
+                throw std::runtime_error(
+                    "stress response has unexpected RESULT fields");
+            }
+            return assigned_order_id;
+        }
+
         [[nodiscard]] Quantity cancelled_remaining_quantity(
             std::string_view response,
+            RequestId expected_request_id,
             OrderId expected_order_id,
             Price expected_price,
             Timestamp expected_timestamp) {
             const std::string prefix =
-                "OK 1\nEVENT ORDER_CANCELLED " +
+                "RESULT " + std::to_string(expected_request_id) +
+                " CANCELLED 0 1\nEVENT ORDER_CANCELLED " +
                 std::to_string(expected_order_id) + " SELL " +
                 std::to_string(expected_price) + " ";
             if (!response.starts_with(prefix)) {
@@ -1209,13 +1443,15 @@ namespace exchange {
                     "client/workload distribution count mismatch");
             }
 
+            ResponseBookkeeping bookkeeping{workload.command_count};
             std::vector<ClientPhaseState> states;
             states.reserve(clients.size());
             for (std::size_t index = 0; index < clients.size(); ++index) {
                 states.emplace_back(
                     clients[index].get(),
                     workload.requests_by_client[index],
-                    outstanding_window);
+                    outstanding_window,
+                    bookkeeping);
             }
 
             std::vector<pollfd> poll_events(clients.size());
@@ -1236,12 +1472,12 @@ namespace exchange {
             const auto send_available = [&](ClientPhaseState& state) {
                 while (state.next_request < state.requests->size() &&
                        state.outstanding.size() < outstanding_window) {
-                    const std::string& request =
+                    const BenchmarkRequest& request =
                         state.requests->at(state.next_request);
                     const char* const pending =
-                        request.data() + state.request_offset;
+                        request.wire.data() + state.request_offset;
                     const std::size_t pending_size =
-                        request.size() - state.request_offset;
+                        request.wire.size() - state.request_offset;
                     const ssize_t bytes_sent = ::send(
                         state.fd,
                         pending,
@@ -1252,7 +1488,7 @@ namespace exchange {
                         state.request_offset +=
                             static_cast<std::size_t>(bytes_sent);
                         last_progress = Clock::now();
-                        if (state.request_offset == request.size()) {
+                        if (state.request_offset == request.wire.size()) {
                             state.request_offset = 0;
                             ++state.next_request;
                             ++state.sent_commands;
@@ -1261,10 +1497,12 @@ namespace exchange {
                             // A request enters the FIFO only when send() has
                             // accepted its final byte. A partial command is
                             // never counted as outstanding.
-                            state.outstanding.push(
+                            const Clock::time_point sent_at =
                                 collect_latencies
-                                    ? Clock::now()
-                                    : Clock::time_point{});
+                                ? Clock::now()
+                                : Clock::time_point{};
+                            state.parser.expect_response(request.request_id);
+                            state.outstanding.push(sent_at);
                             ++total_outstanding;
                             state.maximum_outstanding = std::max(
                                 state.maximum_outstanding,
@@ -1426,7 +1664,6 @@ namespace exchange {
                 completion_time = Clock::now();
             }
 
-            std::size_t observed_trade_count = 0;
             for (const ClientPhaseState& state : states) {
                 if (state.sent_commands != state.requests->size() ||
                     state.next_request != state.requests->size() ||
@@ -1446,8 +1683,9 @@ namespace exchange {
                     throw std::logic_error(
                         "per-client outstanding window exceeded");
                 }
-                observed_trade_count += state.parser.trade_count();
             }
+
+            const std::size_t observed_trade_count = bookkeeping.trade_count;
 
             if (total_sent != workload.command_count ||
                 total_completed != workload.command_count ||
@@ -1457,6 +1695,24 @@ namespace exchange {
             }
             if (observed_trade_count != workload.expected_trade_count) {
                 throw std::runtime_error("trade count mismatch");
+            }
+
+            const auto sort_unique = [](std::vector<OrderId>& order_ids) {
+                std::sort(order_ids.begin(), order_ids.end());
+                return std::adjacent_find(
+                    order_ids.begin(), order_ids.end()) == order_ids.end();
+            };
+            if (bookkeeping.assigned_order_ids.size() !=
+                    workload.command_count ||
+                !sort_unique(bookkeeping.assigned_order_ids) ||
+                !sort_unique(bookkeeping.accepted_order_ids) ||
+                !sort_unique(bookkeeping.terminal_order_ids) ||
+                bookkeeping.accepted_order_ids !=
+                    bookkeeping.assigned_order_ids ||
+                bookkeeping.terminal_order_ids !=
+                    bookkeeping.assigned_order_ids) {
+                throw std::runtime_error(
+                    "server order lifecycle bookkeeping mismatch");
             }
             if (maximum_total_outstanding >
                 clients.size() * outstanding_window) {
@@ -1503,16 +1759,13 @@ namespace exchange {
             const BenchmarkConfig& config,
             std::size_t client_count) {
             const Workload warmup = make_paired_cross_workload(
-                config.warmup_command_count, 1, 1, client_count);
+                config.warmup_command_count, 1, client_count);
 
-            const OrderId measured_first_id =
-                static_cast<OrderId>(config.warmup_command_count) + 1;
-            const Timestamp measured_first_timestamp =
-                static_cast<Timestamp>(config.warmup_command_count) + 1;
+            const RequestId measured_first_request_id =
+                static_cast<RequestId>(config.warmup_command_count) + 1;
             const Workload measured = make_paired_cross_workload(
                 config.command_count,
-                measured_first_id,
-                measured_first_timestamp,
+                measured_first_request_id,
                 client_count);
 
             const std::size_t outstanding_window =
@@ -1563,12 +1816,14 @@ namespace exchange {
 
         [[nodiscard]] CommandPressureResult run_command_pressure_once(
             std::size_t burst_command_count) {
-            constexpr OrderId kSentinelSellId = 4'000'000'000;
-            constexpr OrderId kHealthyBuyId = 5'000'000'000;
-            constexpr OrderId kHealthyRestingId = 5'000'000'001;
+            constexpr RequestId kSentinelRequestId = 1;
+            constexpr RequestId kHealthyBuyRequestId = 2;
+            constexpr RequestId kHealthyRestingRequestId = 3;
+            constexpr OrderId kSentinelSellId = 1;
+            constexpr OrderId kHealthyBuyId = 2;
+            constexpr OrderId kHealthyRestingId = 3;
             constexpr Price kSentinelPrice = 500'000;
             constexpr Quantity kSentinelQuantity = 1;
-            constexpr Timestamp kSentinelTimestamp = 1;
             constexpr Timestamp kHealthyBuyTimestamp = 2;
             constexpr Timestamp kHealthyRestingTimestamp = 3;
 
@@ -1584,11 +1839,11 @@ namespace exchange {
                 connect_client(gateway.local_port());
 
             std::string burst = make_add_request(
-                kSentinelSellId,
+                kSentinelRequestId,
+                kSellerAccountId,
                 "SELL",
                 kSentinelPrice,
-                kSentinelQuantity,
-                kSentinelTimestamp);
+                kSentinelQuantity);
             burst.reserve(burst.size() + 8 * burst_command_count);
             for (std::size_t index = 1;
                  index < burst_command_count;
@@ -1612,11 +1867,11 @@ namespace exchange {
 
             CapturedResponseParser healthy_parser;
             const std::string healthy_buy = make_add_request(
-                kHealthyBuyId,
+                kHealthyBuyRequestId,
+                kBuyerAccountId,
                 "BUY",
                 kSentinelPrice,
-                kSentinelQuantity,
-                kHealthyBuyTimestamp);
+                kSentinelQuantity);
             if (!send_before_deadline(
                     healthy_client.get(), healthy_buy, deadline, gateway)) {
                 throw std::runtime_error(
@@ -1626,6 +1881,7 @@ namespace exchange {
                 healthy_client.get(),
                 healthy_parser,
                 full_match_response(
+                    kHealthyBuyRequestId,
                     kHealthyBuyId,
                     kSentinelSellId,
                     kSentinelPrice,
@@ -1635,11 +1891,11 @@ namespace exchange {
                 gateway);
 
             const std::string healthy_remainder = make_add_request(
-                kHealthyRestingId,
+                kHealthyRestingRequestId,
+                kSellerAccountId,
                 "SELL",
                 kSentinelPrice + 1,
-                kSentinelQuantity,
-                kHealthyRestingTimestamp);
+                kSentinelQuantity);
             if (!send_before_deadline(
                     healthy_client.get(),
                     healthy_remainder,
@@ -1652,6 +1908,7 @@ namespace exchange {
                 healthy_client.get(),
                 healthy_parser,
                 accepted_response(
+                    kHealthyRestingRequestId,
                     kHealthyRestingId,
                     "SELL",
                     kSentinelPrice + 1,
@@ -1677,9 +1934,8 @@ namespace exchange {
         [[nodiscard]] SlowReaderResult run_slow_reader_once(
             std::size_t maximum_slow_commands) {
             constexpr int kSlowReceiveBufferBytes = 1024;
-            constexpr OrderId kSentinelSellId = 6'000'000'000;
-            constexpr OrderId kFirstSlowBuyId = 6'000'000'001;
-            constexpr OrderId kFirstHealthyOrderId = 7'000'000'000;
+            constexpr RequestId kSentinelRequestId = 1;
+            constexpr OrderId kSentinelSellId = 1;
             constexpr Price kSentinelPrice = 1'000'000;
             constexpr Price kHealthyPrice = 100;
             constexpr Quantity kSentinelQuantity = 2'000'000;
@@ -1697,11 +1953,11 @@ namespace exchange {
             CapturedResponseParser healthy_parser;
 
             const std::string sentinel = make_add_request(
-                kSentinelSellId,
+                kSentinelRequestId,
+                kSellerAccountId,
                 "SELL",
                 kSentinelPrice,
-                kSentinelQuantity,
-                kSentinelTimestamp);
+                kSentinelQuantity);
             if (!send_before_deadline(
                     slow_client.get(), sentinel, deadline, gateway)) {
                 throw std::runtime_error(
@@ -1711,7 +1967,7 @@ namespace exchange {
             std::size_t submitted_slow_commands = 1;
             std::size_t submitted_slow_buys = 0;
             std::size_t healthy_responses = 0;
-            std::size_t healthy_pair_index = 0;
+            RequestId next_request_id = 2;
             bool slow_client_closed = false;
 
             while (submitted_slow_commands < maximum_slow_commands &&
@@ -1724,16 +1980,13 @@ namespace exchange {
                 for (std::size_t index = 0;
                      index < batch_count;
                      ++index) {
-                    const OrderId order_id =
-                        kFirstSlowBuyId + submitted_slow_buys + index;
-                    const Timestamp timestamp = static_cast<Timestamp>(
-                        2 + submitted_slow_buys + index);
+                    const RequestId request_id = next_request_id++;
                     slow_batch += make_add_request(
-                        order_id,
+                        request_id,
+                        kBuyerAccountId,
                         "BUY",
                         kSentinelPrice,
-                        kFillQuantity,
-                        timestamp);
+                        kFillQuantity);
                 }
 
                 if (!send_before_deadline(
@@ -1749,26 +2002,20 @@ namespace exchange {
                 // slow client never reads its responses.
                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
 
-                const OrderId healthy_sell_id =
-                    kFirstHealthyOrderId + 2 * healthy_pair_index;
-                const OrderId healthy_buy_id = healthy_sell_id + 1;
-                const Timestamp healthy_sell_timestamp =
-                    static_cast<Timestamp>(
-                        1'000'000 + 2 * healthy_pair_index);
-                const Timestamp healthy_buy_timestamp =
-                    healthy_sell_timestamp + 1;
+                const RequestId healthy_sell_request_id = next_request_id++;
+                const RequestId healthy_buy_request_id = next_request_id++;
                 std::string healthy_pair = make_add_request(
-                    healthy_sell_id,
+                    healthy_sell_request_id,
+                    kSellerAccountId,
                     "SELL",
                     kHealthyPrice,
-                    kFillQuantity,
-                    healthy_sell_timestamp);
+                    kFillQuantity);
                 healthy_pair += make_add_request(
-                    healthy_buy_id,
+                    healthy_buy_request_id,
+                    kBuyerAccountId,
                     "BUY",
                     kHealthyPrice,
-                    kFillQuantity,
-                    healthy_buy_timestamp);
+                    kFillQuantity);
                 if (!send_before_deadline(
                         healthy_client.get(),
                         healthy_pair,
@@ -1778,30 +2025,48 @@ namespace exchange {
                         "healthy client closed during slow-reader stress");
                 }
 
-                expect_response_before_deadline(
+                const std::string healthy_sell_response =
+                    receive_response_before_deadline(
                     healthy_client.get(),
                     healthy_parser,
-                    accepted_response(
+                    deadline,
+                    gateway);
+                const OrderId healthy_sell_id = response_assigned_order_id(
+                    healthy_sell_response,
+                    healthy_sell_request_id,
+                    1);
+                if (healthy_sell_response != accepted_response(
+                        healthy_sell_request_id,
                         healthy_sell_id,
                         "SELL",
                         kHealthyPrice,
                         kFillQuantity,
-                        healthy_sell_timestamp),
-                    deadline,
-                    gateway);
-                expect_response_before_deadline(
+                        static_cast<Timestamp>(healthy_sell_id))) {
+                    throw std::runtime_error(
+                        "healthy resting response was malformed");
+                }
+
+                const std::string healthy_buy_response =
+                    receive_response_before_deadline(
                     healthy_client.get(),
                     healthy_parser,
-                    full_match_response(
+                    deadline,
+                    gateway);
+                const OrderId healthy_buy_id = response_assigned_order_id(
+                    healthy_buy_response,
+                    healthy_buy_request_id,
+                    4);
+                if (healthy_buy_response != full_match_response(
+                        healthy_buy_request_id,
                         healthy_buy_id,
                         healthy_sell_id,
                         kHealthyPrice,
                         kFillQuantity,
-                        healthy_buy_timestamp),
-                    deadline,
-                    gateway);
+                        static_cast<Timestamp>(healthy_buy_id))) {
+                    throw std::runtime_error(
+                        "healthy crossing response was malformed");
+                }
                 healthy_responses += 2;
-                ++healthy_pair_index;
 
                 slow_client_closed =
                     peer_close_signaled(slow_client.get());
@@ -1813,8 +2078,11 @@ namespace exchange {
                     "before the configured command limit");
             }
 
-            const std::string cancel_request =
-                "CANCEL " + std::to_string(kSentinelSellId) + "\n";
+            const RequestId cancel_request_id = next_request_id++;
+            const std::string cancel_request = make_cancel_request(
+                cancel_request_id,
+                kSellerAccountId,
+                kSentinelSellId);
             if (!send_before_deadline(
                     healthy_client.get(),
                     cancel_request,
@@ -1833,6 +2101,7 @@ namespace exchange {
             const Quantity remaining_quantity =
                 cancelled_remaining_quantity(
                     cancel_response,
+                    cancel_request_id,
                     kSentinelSellId,
                     kSentinelPrice,
                     kSentinelTimestamp);
@@ -1939,6 +2208,7 @@ namespace exchange {
         void print_metadata(const BenchmarkConfig& config) {
             std::cout
                 << "scenario: " << scenario_name(config.scenario) << '\n'
+                << "execution_scope: full-account-backed-loopback-tcp\n"
                 << "clients: ";
             for (std::size_t index = 0;
                  index < config.client_counts.size();
@@ -1978,9 +2248,9 @@ namespace exchange {
                     << kDefaultCommandQueueCapacity << '\n'
                     << "response_queue_capacity: "
                     << kDefaultResponseQueueCapacity << '\n'
-                    << "warmup_order_id_range: 1-"
+                    << "warmup_request_id_range: 1-"
                     << config.warmup_command_count << '\n'
-                    << "measured_order_id_range: "
+                    << "measured_request_id_range: "
                     << config.warmup_command_count + 1 << '-'
                     << config.warmup_command_count + config.command_count << '\n'
                     << "percentile_algorithm: nearest-rank\n"
@@ -2112,6 +2382,8 @@ namespace exchange {
                           << std::setprecision(2)
                           << " commands_per_second="
                           << commands_per_second
+                          << " adds_per_second="
+                          << commands_per_second
                           << " trades_per_second="
                           << trades_per_second
                           << " max_per_client_outstanding="
@@ -2122,14 +2394,15 @@ namespace exchange {
             }
 
             std::cout << "\n| Clients | Window | Commands | Median elapsed (s) | "
-                         "Commands/s | Trades/s | CV |\n"
-                      << "|---:|---:|---:|---:|---:|---:|---:|\n"
+                         "Commands/s | Adds/s | Trades/s | CV |\n"
+                      << "|---:|---:|---:|---:|---:|---:|---:|---:|\n"
                       << "| " << client_count
                       << " | " << kThroughputOutstandingWindow
                       << " | " << config.command_count
                       << std::fixed << std::setprecision(6)
                       << " | " << median(elapsed_values)
                       << std::setprecision(2)
+                      << " | " << median(command_rates)
                       << " | " << median(command_rates)
                       << " | " << median(trade_rates)
                       << " | "

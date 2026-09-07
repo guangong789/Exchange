@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <future>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -26,12 +27,47 @@ namespace exchange {
                 TcpGateway::CommandEnvelope{
                     0,
                     ProtocolError{
-                        static_cast<ProtocolErrorCode>(-1),
-                        0}});
+                        static_cast<ProtocolErrorCode>(-1)}});
+        }
+
+        static void stop_worker(TcpGateway& gateway) {
+            gateway.request_stop();
+            if (gateway.execution_thread_.joinable()) {
+                gateway.execution_thread_.join();
+            }
+        }
+
+        static const TradingRuntime& runtime(const TcpGateway& gateway) {
+            return *gateway.runtime_;
         }
     };
 
     namespace {
+        constexpr InstrumentContext kTestInstrument{20, 10, 1, 1, 1};
+        constexpr Amount kInitialBalance = 1'000'000;
+
+        std::unique_ptr<TradingRuntime> make_test_runtime() {
+            auto runtime =
+                std::make_unique<TradingRuntime>(kTestInstrument);
+            for (const AccountId account_id : {1U, 2U}) {
+                if (!runtime->accounts().create_account(account_id)) {
+                    throw std::logic_error("duplicate test account");
+                }
+                runtime->accounts().fund(
+                    account_id,
+                    kTestInstrument.base_asset,
+                    kInitialBalance);
+                runtime->accounts().fund(
+                    account_id,
+                    kTestInstrument.quote_asset,
+                    kInitialBalance);
+            }
+            if (!runtime->accounts().create_account(3)) {
+                throw std::logic_error("duplicate unfunded test account");
+            }
+            return runtime;
+        }
+
         class GatewayClient {
         public:
             explicit GatewayClient(int fd) : fd_(fd) {}
@@ -201,106 +237,207 @@ namespace exchange {
                 return connect_gateway_client(gateway_);
             }
 
-            TcpGateway gateway_{0};
+            TcpGateway gateway_{0, make_test_runtime()};
         };
 
         TEST_F(TcpGatewayTest, ValidAddResponseIsReceivedOverTcp) {
             const GatewayClient client = connect_client();
-            send_gateway_bytes(client.get(), "ADD 1 BUY 100 5 10\n");
+            send_gateway_bytes(
+                client.get(), "ADD 101 1 BUY 100 5\n");
 
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 1\n");
+
+            TcpGatewayTestAccess::stop_worker(gateway_);
+            const TradingRuntime& runtime =
+                TcpGatewayTestAccess::runtime(gateway_);
+            EXPECT_EQ(
+                runtime.accounts().find_balance(1, 10),
+                (Balance{kInitialBalance - 500, 500}));
+            EXPECT_EQ(
+                runtime.reservations().find(1),
+                (OrderReservation{1, 10, 500, 500}));
+            EXPECT_TRUE(runtime.order_book().find_order(1).has_value());
+            EXPECT_EQ(runtime.ledger().entries().size(), 1U);
         }
 
         TEST_F(TcpGatewayTest, ValidCancelResponseIsReceivedOverTcp) {
             const GatewayClient client = connect_client();
-            send_gateway_bytes(client.get(), "ADD 1 BUY 100 5 10\n");
+            send_gateway_bytes(
+                client.get(), "ADD 101 1 BUY 100 5\n");
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 1\n");
 
-            send_gateway_bytes(client.get(), "CANCEL 1\n");
+            send_gateway_bytes(client.get(), "CANCEL 102 1 1\n");
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_CANCELLED 1 BUY 100 5 10\n");
+                "RESULT 102 CANCELLED 0 1\n"
+                "EVENT ORDER_CANCELLED 1 BUY 100 5 1\n");
+
+            TcpGatewayTestAccess::stop_worker(gateway_);
+            const TradingRuntime& runtime =
+                TcpGatewayTestAccess::runtime(gateway_);
+            EXPECT_EQ(
+                runtime.accounts().find_balance(1, 10),
+                (Balance{kInitialBalance, 0}));
+            EXPECT_FALSE(runtime.reservations().find(1).has_value());
+            EXPECT_EQ(runtime.order_book().order_count(), 0U);
+            EXPECT_EQ(runtime.ledger().entries().size(), 2U);
         }
 
-        TEST_F(TcpGatewayTest, ProtocolErrorsAreReceivedOverTcp) {
+        TEST_F(TcpGatewayTest, OldAndMalformedWireGrammarAreRejected) {
             const GatewayClient client = connect_client();
 
             send_gateway_bytes(
                 client.get(),
                 "BROKEN\n"
                 "ADD 1 BUY 0 5 10\n"
-                "CANCEL 99\n");
+                "ADD 1 1 99 BUY 0 5 10\n");
 
             receive_exact(
                 gateway_,
                 client.get(),
                 "ERR MALFORMED_COMMAND\n"
-                "ERR INVALID_ORDER\n"
-                "ERR CANCEL_NOT_FOUND 99\n");
+                "ERR MALFORMED_COMMAND\n"
+                "ERR MALFORMED_COMMAND\n");
         }
 
-        TEST_F(TcpGatewayTest, MatchingResponseContainsOrderedEventLines) {
+        TEST_F(TcpGatewayTest,
+               AccountBackedTradePreservesEventsAndFinancialState) {
             const GatewayClient client = connect_client();
-            send_gateway_bytes(client.get(), "ADD 1 SELL 100 5 10\n");
+            send_gateway_bytes(
+                client.get(), "ADD 101 1 SELL 100 5\n");
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 SELL 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 SELL 100 5 1\n");
 
-            send_gateway_bytes(client.get(), "ADD 2 BUY 100 5 20\n");
+            send_gateway_bytes(
+                client.get(), "ADD 202 2 BUY 100 5\n");
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 4\n"
-                "EVENT ORDER_ACCEPTED 2 BUY 100 5 20\n"
-                "EVENT TRADE_CREATED 2 1 100 5 20\n"
+                "RESULT 202 ACCEPTED 2 4\n"
+                "EVENT ORDER_ACCEPTED 2 BUY 100 5 2\n"
+                "EVENT TRADE_CREATED 2 1 100 5 2\n"
                 "EVENT ORDER_FILLED 1 SELL 5\n"
                 "EVENT ORDER_FILLED 2 BUY 5\n");
+
+            TcpGatewayTestAccess::stop_worker(gateway_);
+            const TradingRuntime& runtime =
+                TcpGatewayTestAccess::runtime(gateway_);
+            EXPECT_EQ(
+                runtime.accounts().find_balance(1, 20),
+                (Balance{kInitialBalance - 5, 0}));
+            EXPECT_EQ(
+                runtime.accounts().find_balance(1, 10),
+                (Balance{kInitialBalance + 500, 0}));
+            EXPECT_EQ(
+                runtime.accounts().find_balance(2, 20),
+                (Balance{kInitialBalance + 5, 0}));
+            EXPECT_EQ(
+                runtime.accounts().find_balance(2, 10),
+                (Balance{kInitialBalance - 500, 0}));
+            EXPECT_FALSE(runtime.reservations().find(1).has_value());
+            EXPECT_FALSE(runtime.reservations().find(2).has_value());
+            EXPECT_EQ(runtime.order_book().order_count(), 0U);
+            EXPECT_EQ(runtime.ledger().entries().size(), 3U);
+        }
+
+        TEST_F(TcpGatewayTest,
+               BusinessFailuresReturnResultsAndWorkerContinues) {
+            const GatewayClient client = connect_client();
+
+            send_gateway_bytes(
+                client.get(),
+                "ADD 301 3 BUY 100 1\n"
+                "ADD 302 999 BUY 100 1\n"
+                "ADD 303 1 BUY 100 1\n");
+
+            receive_exact(
+                gateway_,
+                client.get(),
+                "RESULT 301 INSUFFICIENT_FUNDS 0 0\n"
+                "RESULT 302 ACCOUNT_NOT_FOUND 0 0\n"
+                "RESULT 303 ACCEPTED 3 1\n"
+                "EVENT ORDER_ACCEPTED 3 BUY 100 1 3\n");
+        }
+
+        TEST_F(TcpGatewayTest, NonOwnerCancelIsRejectedAndOwnerCanCancel) {
+            const GatewayClient client = connect_client();
+            send_gateway_bytes(
+                client.get(),
+                "ADD 401 1 SELL 100 2\n"
+                "CANCEL 402 2 1\n"
+                "CANCEL 403 1 1\n");
+
+            receive_exact(
+                gateway_,
+                client.get(),
+                "RESULT 401 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 SELL 100 2 1\n"
+                "RESULT 402 CANCEL_NOT_OWNER 0 0\n"
+                "RESULT 403 CANCELLED 0 1\n"
+                "EVENT ORDER_CANCELLED 1 SELL 100 2 1\n");
+        }
+
+        TEST_F(TcpGatewayTest,
+               RepeatedRequestIdAllocatesDistinctOrdersWithoutDeduplication) {
+            const GatewayClient client = connect_client();
+            send_gateway_bytes(
+                client.get(),
+                "ADD 501 1 BUY 100 1\n"
+                "ADD 501 1 BUY 99 1\n");
+
+            receive_exact(
+                gateway_,
+                client.get(),
+                "RESULT 501 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 1 1\n"
+                "RESULT 501 ACCEPTED 2 1\n"
+                "EVENT ORDER_ACCEPTED 2 BUY 99 1 2\n");
         }
 
         TEST_F(TcpGatewayTest, MultipleCommandsPreserveResponseByteOrder) {
             const GatewayClient client = connect_client();
             send_gateway_bytes(
                 client.get(),
-                "ADD 1 BUY 100 5 10\n"
-                "CANCEL 1\n");
+                "ADD 101 1 BUY 100 5\n"
+                "CANCEL 102 1 1\n");
 
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n"
-                "OK 1\n"
-                "EVENT ORDER_CANCELLED 1 BUY 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 1\n"
+                "RESULT 102 CANCELLED 0 1\n"
+                "EVENT ORDER_CANCELLED 1 BUY 100 5 1\n");
         }
 
         TEST_F(TcpGatewayTest, MalformedCommandPreservesResponseOrder) {
             const GatewayClient client = connect_client();
             send_gateway_bytes(
                 client.get(),
-                "ADD 1 BUY 100 5 10\n"
+                "ADD 101 1 BUY 100 5\n"
                 "BROKEN\n"
-                "CANCEL 1\n");
+                "CANCEL 102 1 1\n");
 
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n"
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 1\n"
                 "ERR MALFORMED_COMMAND\n"
-                "OK 1\n"
-                "EVENT ORDER_CANCELLED 1 BUY 100 5 10\n");
+                "RESULT 102 CANCELLED 0 1\n"
+                "EVENT ORDER_CANCELLED 1 BUY 100 5 1\n");
         }
 
         TEST_F(TcpGatewayTest, TwoClientsReceiveOnlyTheirOwnResponses) {
@@ -308,12 +445,12 @@ namespace exchange {
             const GatewayClient second_client = connect_client();
 
             send_gateway_bytes(
-                first_client.get(), "ADD 1 SELL 100 5 10\n");
+                first_client.get(), "ADD 101 1 SELL 100 5\n");
             receive_exact(
                 gateway_,
                 first_client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 SELL 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 SELL 100 5 1\n");
 
             std::string unexpected_first_response;
             EXPECT_FALSE(receive_available(
@@ -321,13 +458,13 @@ namespace exchange {
             EXPECT_TRUE(unexpected_first_response.empty());
 
             send_gateway_bytes(
-                second_client.get(), "ADD 2 BUY 100 5 20\n");
+                second_client.get(), "ADD 202 2 BUY 100 5\n");
             receive_exact(
                 gateway_,
                 second_client.get(),
-                "OK 4\n"
-                "EVENT ORDER_ACCEPTED 2 BUY 100 5 20\n"
-                "EVENT TRADE_CREATED 2 1 100 5 20\n"
+                "RESULT 202 ACCEPTED 2 4\n"
+                "EVENT ORDER_ACCEPTED 2 BUY 100 5 2\n"
+                "EVENT TRADE_CREATED 2 1 100 5 2\n"
                 "EVENT ORDER_FILLED 1 SELL 5\n"
                 "EVENT ORDER_FILLED 2 BUY 5\n");
 
@@ -339,31 +476,32 @@ namespace exchange {
 
         TEST_F(TcpGatewayTest, SplitCommandReceivesOneCompleteResponse) {
             const GatewayClient client = connect_client();
-            send_gateway_bytes(client.get(), "ADD 1 BUY 100");
+            send_gateway_bytes(client.get(), "ADD 101 1 BUY 100");
             gateway_.poll_once(20);
 
             std::string premature_response;
             EXPECT_FALSE(receive_available(client.get(), premature_response));
             EXPECT_TRUE(premature_response.empty());
 
-            send_gateway_bytes(client.get(), " 5 10\n");
+            send_gateway_bytes(client.get(), " 5\n");
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 1\n");
         }
 
         TEST_F(TcpGatewayTest, HalfCloseFlushesResponseBeforeServerCloses) {
             const GatewayClient client = connect_client();
-            send_gateway_bytes(client.get(), "ADD 1 BUY 100 5 10\n");
+            send_gateway_bytes(
+                client.get(), "ADD 101 1 BUY 100 5\n");
             client.shutdown_write();
 
             receive_exact(
                 gateway_,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 1 BUY 100 5 10\n");
+                "RESULT 101 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 5 1\n");
             poll_gateway_until(gateway_, [&] {
                 return gateway_.connection_count() == 0;
             });
@@ -376,20 +514,20 @@ namespace exchange {
             const GatewayClient second_client = connect_client();
 
             send_gateway_bytes(
-                first_client.get(), "ADD 1 SELL 100 5 10\n");
+                first_client.get(), "ADD 101 1 SELL 100 5\n");
             first_client.reset();
             poll_gateway_until(gateway_, [&] {
                 return gateway_.connection_count() == 1;
             });
 
             send_gateway_bytes(
-                second_client.get(), "ADD 2 BUY 100 5 20\n");
+                second_client.get(), "ADD 202 2 BUY 100 5\n");
             receive_exact(
                 gateway_,
                 second_client.get(),
-                "OK 4\n"
-                "EVENT ORDER_ACCEPTED 2 BUY 100 5 20\n"
-                "EVENT TRADE_CREATED 2 1 100 5 20\n"
+                "RESULT 202 ACCEPTED 2 4\n"
+                "EVENT ORDER_ACCEPTED 2 BUY 100 5 2\n"
+                "EVENT TRADE_CREATED 2 1 100 5 2\n"
                 "EVENT ORDER_FILLED 1 SELL 5\n"
                 "EVENT ORDER_FILLED 2 BUY 5\n");
         }
@@ -397,13 +535,13 @@ namespace exchange {
         TEST(TcpGatewayBackpressureTest, FullResponseQueueResumesAfterIoDrain) {
             using namespace std::chrono_literals;
 
-            TcpGateway gateway{0, 8, 1};
+            TcpGateway gateway{0, make_test_runtime(), 8, 1};
             const GatewayClient client = connect_gateway_client(gateway);
             send_gateway_bytes(
                 client.get(),
-                "ADD 10 BUY 90 1 10\n"
-                "ADD 11 BUY 89 1 11\n"
-                "ADD 12 BUY 88 1 12\n");
+                "ADD 110 1 BUY 90 1\n"
+                "ADD 111 1 BUY 89 1\n"
+                "ADD 112 1 BUY 88 1\n");
 
             gateway.poll_once(100);
             std::this_thread::sleep_for(25ms);
@@ -411,16 +549,16 @@ namespace exchange {
             receive_exact(
                 gateway,
                 client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 10 BUY 90 1 10\n"
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 11 BUY 89 1 11\n"
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 12 BUY 88 1 12\n");
+                "RESULT 110 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 90 1 1\n"
+                "RESULT 111 ACCEPTED 2 1\n"
+                "EVENT ORDER_ACCEPTED 2 BUY 89 1 2\n"
+                "RESULT 112 ACCEPTED 3 1\n"
+                "EVENT ORDER_ACCEPTED 3 BUY 88 1 3\n");
         }
 
         TEST(TcpGatewayBackpressureTest, FullCommandQueueClosesOnlyOffender) {
-            TcpGateway gateway{0, 1, 1};
+            TcpGateway gateway{0, make_test_runtime(), 1, 1};
             const GatewayClient offending_client =
                 connect_gateway_client(gateway);
             const GatewayClient healthy_client =
@@ -447,7 +585,7 @@ namespace exchange {
              DisconnectedClientResponsesAreNotRoutedToReplacement) {
             using namespace std::chrono_literals;
 
-            TcpGateway gateway{0, 8, 1};
+            TcpGateway gateway{0, make_test_runtime(), 8, 1};
             GatewayClient disconnected_client =
                 connect_gateway_client(gateway);
             send_gateway_bytes(
@@ -464,12 +602,13 @@ namespace exchange {
             const GatewayClient replacement_client =
                 connect_gateway_client(gateway);
             send_gateway_bytes(
-                replacement_client.get(), "ADD 200 SELL 110 1 200\n");
+                replacement_client.get(),
+                "ADD 1200 1 SELL 110 1\n");
             receive_exact(
                 gateway,
                 replacement_client.get(),
-                "OK 1\n"
-                "EVENT ORDER_ACCEPTED 200 SELL 110 1 200\n");
+                "RESULT 1200 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 SELL 110 1 1\n");
 
             std::string unexpected_response;
             EXPECT_FALSE(receive_available(
@@ -477,10 +616,43 @@ namespace exchange {
             EXPECT_TRUE(unexpected_response.empty());
         }
 
+        TEST(TcpGatewayBackpressureTest,
+             OutputLimitedClientDoesNotBlockHealthyClient) {
+            using namespace std::chrono_literals;
+
+            TcpGateway gateway{0, make_test_runtime(), 5'000, 5'000};
+            const GatewayClient slow_client =
+                connect_gateway_client(gateway);
+            const GatewayClient healthy_client =
+                connect_gateway_client(gateway);
+
+            std::string slow_requests;
+            slow_requests.reserve(4'000 * 7);
+            for (int index = 0; index < 4'000; ++index) {
+                slow_requests += "BROKEN\n";
+            }
+            send_gateway_bytes(slow_client.get(), slow_requests);
+            gateway.poll_once(100);
+            std::this_thread::sleep_for(25ms);
+
+            send_gateway_bytes(
+                healthy_client.get(),
+                "ADD 601 1 BUY 100 1\n");
+            receive_exact(
+                gateway,
+                healthy_client.get(),
+                "RESULT 601 ACCEPTED 1 1\n"
+                "EVENT ORDER_ACCEPTED 1 BUY 100 1 1\n");
+
+            poll_gateway_until(gateway, [&] {
+                return gateway.connection_count() == 1;
+            });
+        }
+
         TEST(TcpGatewayLifecycleTest, RequestStopWakesBlockingRun) {
             using namespace std::chrono_literals;
 
-            TcpGateway gateway{0};
+            TcpGateway gateway{0, make_test_runtime()};
             auto runner = std::async(
                 std::launch::async,
                 [&] { gateway.run(); });
@@ -499,7 +671,7 @@ namespace exchange {
             auto lifecycle = std::async(
                 std::launch::async,
                 [] {
-                    TcpGateway gateway{0, 8, 1};
+                    TcpGateway gateway{0, make_test_runtime(), 8, 1};
                     const GatewayClient client =
                         connect_gateway_client(gateway);
                     send_gateway_bytes(
@@ -518,7 +690,7 @@ namespace exchange {
              WorkerFailureIsRethrownFromRunInsteadOfTerminating) {
             using namespace std::chrono_literals;
 
-            TcpGateway gateway{0};
+            TcpGateway gateway{0, make_test_runtime()};
             ASSERT_TRUE(
                 TcpGatewayTestAccess::enqueue_unexpected_protocol_error(
                     gateway));

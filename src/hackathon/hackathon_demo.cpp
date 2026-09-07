@@ -86,13 +86,14 @@ namespace exchange {
                 matching_engine,
                 events,
                 ledger};
+            ExecutionSequencer sequencer;
             AgentRegistry registry;
             AgentObservationService observations{
                 registry,
                 accounts,
                 matching_engine.order_book(),
                 demo_instrument};
-            AgentActionGateway actions{registry, execution};
+            AgentActionGateway actions{registry, execution, sequencer};
             FundingCoordinator funding{demo_treasury_account, accounts, ledger};
         };
 
@@ -780,6 +781,7 @@ namespace exchange {
         [[nodiscard]] static std::string submit_result_name(SubmitResult result) {
             switch (result) {
                 case SubmitResult::Accepted: return "Accepted";
+                case SubmitResult::AccountNotFound: return "AccountNotFound";
                 case SubmitResult::InsufficientFunds: return "InsufficientFunds";
                 case SubmitResult::DuplicateOrder: return "DuplicateOrder";
                 case SubmitResult::InvalidOrder: return "InvalidOrder";

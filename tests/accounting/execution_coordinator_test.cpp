@@ -307,6 +307,22 @@ namespace exchange {
             EXPECT_TRUE(ledger.entries().empty());
         }
 
+        TEST_F(ExecutionCoordinatorTest,
+               MissingSubmitAccountReturnsBusinessResultWithoutMutation) {
+            const SubmitResult result = coordinator.submit_order(
+                OrderAdmissionRequest{
+                    99,
+                    limit_order(120, Side::Buy, 100, 1)});
+
+            EXPECT_EQ(result, SubmitResult::AccountNotFound);
+            EXPECT_FALSE(accounts.contains_account(99));
+            EXPECT_FALSE(accounts.find_balance(99, 10).has_value());
+            EXPECT_FALSE(reservations.find(120).has_value());
+            EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
+            EXPECT_TRUE(events.empty());
+            EXPECT_TRUE(ledger.entries().empty());
+        }
+
         TEST_F(ExecutionCoordinatorTest, FailedSubmitConsumesNoLedgerSequence) {
             ASSERT_TRUE(accounts.create_account(1));
             accounts.fund(1, 10, 500);
@@ -768,6 +784,31 @@ namespace exchange {
             EXPECT_EQ(matching_engine.order_book().order_count(), 0U);
             EXPECT_TRUE(events.empty());
             EXPECT_TRUE(ledger.entries().empty());
+        }
+
+        TEST_F(ExecutionCoordinatorTest,
+               MissingCancelAccountReturnsBusinessResultWithoutMutation) {
+            ASSERT_TRUE(accounts.create_account(1));
+            accounts.fund(1, 10, 1'000);
+            ASSERT_EQ(
+                coordinator.submit_order(OrderAdmissionRequest{
+                    1,
+                    limit_order(413, Side::Buy, 100, 1)}),
+                SubmitResult::Accepted);
+            const auto balance_before = accounts.find_balance(1, 10);
+            const auto reservation_before = reservations.find(413);
+            const std::size_t ledger_size_before = ledger.entries().size();
+
+            EXPECT_EQ(
+                coordinator.cancel_order(99, 413),
+                CancelResult::AccountNotFound);
+
+            EXPECT_FALSE(accounts.contains_account(99));
+            EXPECT_EQ(accounts.find_balance(1, 10), balance_before);
+            EXPECT_EQ(reservations.find(413), reservation_before);
+            EXPECT_TRUE(matching_engine.order_book().find_order(413).has_value());
+            EXPECT_TRUE(events.empty());
+            EXPECT_EQ(ledger.entries().size(), ledger_size_before);
         }
 
         TEST_F(ExecutionCoordinatorTest, PureMatchingOrderIsNotAccountCancellable) {

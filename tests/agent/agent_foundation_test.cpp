@@ -3,6 +3,7 @@
 #include "exchange/agent/agent_observation_service.hpp"
 #include "exchange/agent/agent_registry.hpp"
 #include "exchange/accounting/funding_coordinator.hpp"
+#include "exchange/execution/trading_request_executor.hpp"
 
 #include <stdexcept>
 #include <type_traits>
@@ -37,6 +38,7 @@ namespace exchange {
                 matching_engine,
                 events,
                 ledger};
+            ExecutionSequencer sequencer;
             AgentRegistry registry;
             AgentObservationService observations{
                 registry,
@@ -45,7 +47,8 @@ namespace exchange {
                 test_instrument};
             AgentActionGateway actions{
                 registry,
-                execution_coordinator};
+                execution_coordinator,
+                sequencer};
         };
 
         void create_agent(
@@ -153,7 +156,7 @@ namespace exchange {
         }
 
         TEST(AgentActionGatewayTest,
-             HoldDoesNotMutateWorldOrConsumeSubmitSequence) {
+             HoldAndInvalidSubmitDoNotConsumeSequence) {
             AgentWorld world;
             create_agent(world, agent_a, account_a);
             world.accounts.fund(account_a, 10, 500);
@@ -161,6 +164,14 @@ namespace exchange {
             EXPECT_EQ(
                 world.actions.execute(agent_a, HoldAction{}),
                 AgentActionResult{HoldActionResult{}});
+            EXPECT_EQ(
+                world.actions.execute(
+                    agent_a,
+                    SubmitOrderAction{Side::Buy, 0, 1}),
+                (AgentActionResult{SubmitActionResult{
+                    0,
+                    0,
+                    SubmitResult::InvalidOrder}}));
             EXPECT_TRUE(world.ledger.entries().empty());
             EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
 
@@ -210,6 +221,41 @@ namespace exchange {
                 world.ledger.entries()[0].transaction.metadata));
             EXPECT_TRUE(std::holds_alternative<ReleaseLedgerMetadata>(
                 world.ledger.entries()[1].transaction.metadata));
+        }
+
+        TEST(AgentActionGatewayTest,
+             SharesOrderSequenceWithTradingRequestExecutor) {
+            AgentWorld world;
+            create_agent(world, agent_a, account_a);
+            create_agent(world, agent_b, account_b);
+            world.accounts.fund(account_a, 10, 500);
+            world.accounts.fund(account_b, 10, 500);
+            TradingRequestExecutor executor{
+                test_instrument,
+                world.execution_coordinator,
+                world.events,
+                world.sequencer};
+
+            const AgentActionResult agent_result = world.actions.execute(
+                agent_a,
+                SubmitOrderAction{Side::Buy, 90, 1});
+            const TradingResponse execution_result = executor.execute(
+                TradingRequest{
+                    700,
+                    account_b,
+                    SubmitTradingRequest{Side::Buy, 80, 1}});
+
+            const auto& agent_submit =
+                std::get<SubmitActionResult>(agent_result);
+            EXPECT_EQ(agent_submit.order_id, 1U);
+            EXPECT_EQ(agent_submit.timestamp, 1);
+            EXPECT_EQ(execution_result.request_id, 700U);
+            EXPECT_EQ(execution_result.assigned_order_id, 2U);
+            const auto& accepted = std::get<OrderAccepted>(
+                execution_result.events.front().payload);
+            EXPECT_EQ(accepted.order.id, 2U);
+            EXPECT_EQ(accepted.order.timestamp, 2);
+            EXPECT_EQ(world.matching_engine.order_book().order_count(), 2U);
         }
 
         TEST(AgentPolicyTest, DeterministicallyBuysAtEligibleAskOtherwiseHolds) {

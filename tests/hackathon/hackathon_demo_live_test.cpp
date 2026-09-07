@@ -28,13 +28,14 @@ namespace exchange {
                 matching_engine,
                 events,
                 ledger};
+            ExecutionSequencer sequencer;
             AgentRegistry registry;
             AgentObservationService observations{
                 registry,
                 accounts,
                 matching_engine.order_book(),
                 live_instrument};
-            AgentActionGateway actions{registry, execution};
+            AgentActionGateway actions{registry, execution, sequencer};
         };
 
         class CountingLiveModelAdapter final : public ModelAdapter {

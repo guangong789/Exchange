@@ -1,20 +1,19 @@
 #pragma once
 
-#include "exchange/matching/command.hpp"
 #include "exchange/protocol/line_protocol.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
 
 #include "exchange/core/bounded_queue.hpp"
+#include "exchange/execution/trading_runtime.hpp"
 #include "exchange/gateway/epoll_server.hpp"
-#include "exchange/matching/event_collector.hpp"
-#include "exchange/matching/matching_engine.hpp"
 
 namespace exchange {
     inline constexpr std::size_t kDefaultCommandQueueCapacity = 1024;
@@ -24,6 +23,7 @@ namespace exchange {
     public:
         explicit TcpGateway(
             std::uint16_t port,
+            std::unique_ptr<TradingRuntime> runtime,
             std::size_t command_queue_capacity =
                 kDefaultCommandQueueCapacity,
             std::size_t response_queue_capacity =
@@ -47,7 +47,7 @@ namespace exchange {
 
         struct CommandEnvelope {
             ConnectionId connection_id;
-            CommandParseResult request;
+            TradingRequestParseResult request;
         };
 
         struct ResponseEnvelope {
@@ -57,23 +57,19 @@ namespace exchange {
 
         void handle_line(ConnectionId connection_id, std::string_view line);
         void handle_wakeup();
-        void matching_loop() noexcept;
+        void execution_loop() noexcept;
         void rethrow_worker_failure() const;
         [[nodiscard]] static std::string execute_request(
-            const CommandParseResult& request,
-            MatchingEngine& matching_engine,
-            EventCollector& event_collector);
-        [[nodiscard]] static std::string execute_command(
-            const Command& command,
-            MatchingEngine& matching_engine,
-            EventCollector& event_collector);
+            const TradingRequestParseResult& request,
+            TradingRequestExecutor& executor);
 
+        std::unique_ptr<TradingRuntime> runtime_;
         BoundedQueue<CommandEnvelope> command_queue_;
         BoundedQueue<ResponseEnvelope> response_queue_;
         std::atomic_bool stop_requested_{};
         std::exception_ptr worker_failure_;
         std::atomic_bool worker_failure_ready_{};
         EpollServer server_;
-        std::thread matching_thread_;
+        std::thread execution_thread_;
     };
 }  // namespace exchange

@@ -555,6 +555,9 @@ namespace exchange {
         if (request.account_id == 0) {
             throw std::invalid_argument("account ID must be non-zero");
         }
+        if (!accounts_.contains_account(request.account_id)) {
+            return SubmitResult::AccountNotFound;
+        }
         if (request.order.id == 0) {
             return SubmitResult::InvalidOrder;
         }
@@ -718,6 +721,9 @@ namespace exchange {
         }
         if (order_id == 0) {
             throw std::invalid_argument("order ID must be non-zero");
+        }
+        if (!accounts_.contains_account(requester)) {
+            return CancelResult::AccountNotFound;
         }
 
         const auto reservation = reservations_.find(order_id);

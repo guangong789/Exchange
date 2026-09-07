@@ -3,13 +3,11 @@
 #include "exchange/core/types.hpp"
 
 #include <cstddef>
-#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
 
-#include "exchange/matching/command.hpp"
-#include "exchange/matching/event.hpp"
+#include "exchange/execution/trading_request.hpp"
 
 namespace exchange {
     inline constexpr std::size_t kMaxProtocolLineLength = 256;
@@ -44,21 +42,22 @@ namespace exchange {
 
     enum class ProtocolErrorCode {
         MalformedCommand,
-        InvalidOrder,
-        CancelNotFound,
         LineTooLong,
     };
 
     struct ProtocolError {
         ProtocolErrorCode code{ProtocolErrorCode::MalformedCommand};
-        OrderId order_id{};
 
         bool operator==(const ProtocolError&) const = default;
     };
 
-    using CommandParseResult = std::variant<Command, ProtocolError>;
+    using TradingRequestParseResult =
+        std::variant<TradingRequest, ProtocolError>;
 
-    [[nodiscard]] CommandParseResult parse_command(std::string_view line);
-    [[nodiscard]] std::string encode_success(std::span<const Event> events);
+    [[nodiscard]] TradingRequestParseResult parse_trading_request(
+        std::string_view line);
+    [[nodiscard]] std::string encode_trading_response(
+        const TradingResponse& response);
+
     [[nodiscard]] std::string encode_error(ProtocolError error);
 }  // namespace exchange

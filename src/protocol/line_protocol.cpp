@@ -111,7 +111,38 @@ namespace exchange {
         }
 
         ProtocolError malformed_command() {
-            return ProtocolError{ProtocolErrorCode::MalformedCommand, 0};
+            return ProtocolError{ProtocolErrorCode::MalformedCommand};
+        }
+
+        std::string_view trading_result_name(TradingResult result) {
+            switch (result) {
+                case TradingResult::Accepted:
+                    return "ACCEPTED";
+                case TradingResult::Cancelled:
+                    return "CANCELLED";
+                case TradingResult::AccountNotFound:
+                    return "ACCOUNT_NOT_FOUND";
+                case TradingResult::InsufficientFunds:
+                    return "INSUFFICIENT_FUNDS";
+                case TradingResult::DuplicateOrder:
+                    return "DUPLICATE_ORDER";
+                case TradingResult::InvalidOrder:
+                    return "INVALID_ORDER";
+                case TradingResult::CounterpartyNotAccountBacked:
+                    return "COUNTERPARTY_NOT_ACCOUNT_BACKED";
+                case TradingResult::CancelNotFound:
+                    return "CANCEL_NOT_FOUND";
+                case TradingResult::CancelNotOwner:
+                    return "CANCEL_NOT_OWNER";
+                case TradingResult::InvalidRequest:
+                    return "INVALID_REQUEST";
+            }
+            throw std::invalid_argument("unknown trading result");
+        }
+
+        bool is_successful(TradingResult result) {
+            return result == TradingResult::Accepted
+                || result == TradingResult::Cancelled;
         }
     }  // namespace
 
@@ -176,7 +207,8 @@ namespace exchange {
         }
     }
 
-    CommandParseResult parse_command(std::string_view line) {
+    TradingRequestParseResult parse_trading_request(
+        std::string_view line) {
         const std::vector<std::string_view> tokens = split_tokens(line);
         if (tokens.empty()) {
             return malformed_command();
@@ -187,47 +219,89 @@ namespace exchange {
                 return malformed_command();
             }
 
-            Order order;
-            if (!parse_integer(tokens[1], order.id)) {
+            RequestId request_id{};
+            AccountId account_id{};
+            if (!parse_integer(tokens[1], request_id)
+                || !parse_integer(tokens[2], account_id)) {
                 return malformed_command();
             }
-            if (tokens[2] == "BUY") {
-                order.side = Side::Buy;
-            } else if (tokens[2] == "SELL") {
-                order.side = Side::Sell;
+            Side side;
+            if (tokens[3] == "BUY") {
+                side = Side::Buy;
+            } else if (tokens[3] == "SELL") {
+                side = Side::Sell;
             } else {
                 return malformed_command();
             }
-            if (!parse_integer(tokens[3], order.price) ||
-                !parse_integer(tokens[4], order.quantity) ||
-                !parse_integer(tokens[5], order.timestamp)) {
+            Price price{};
+            Quantity quantity{};
+            if (!parse_integer(tokens[4], price)
+                || !parse_integer(tokens[5], quantity)) {
                 return malformed_command();
             }
-            order.type = OrderType::Limit;
-            return Command{CommandPayload{AddOrder{order}}};
+            if (request_id == 0 || account_id == 0
+                || price <= 0 || quantity <= 0) {
+                return malformed_command();
+            }
+
+            return TradingRequest{
+                request_id,
+                account_id,
+                SubmitTradingRequest{side, price, quantity}};
         }
 
         if (tokens[0] == "CANCEL") {
-            if (tokens.size() != 2) {
+            if (tokens.size() != 4) {
                 return malformed_command();
             }
 
+            RequestId request_id{};
+            AccountId account_id{};
             OrderId order_id{};
-            if (!parse_integer(tokens[1], order_id)) {
+            if (!parse_integer(tokens[1], request_id)
+                || !parse_integer(tokens[2], account_id)
+                || !parse_integer(tokens[3], order_id)
+                || request_id == 0 || account_id == 0 || order_id == 0) {
                 return malformed_command();
             }
-            return Command{CommandPayload{CancelOrder{order_id}}};
+            return TradingRequest{
+                request_id,
+                account_id,
+                CancelTradingRequest{order_id}};
         }
 
         return malformed_command();
     }
 
-    std::string encode_success(std::span<const Event> events) {
-        std::string output = "OK ";
-        output += std::to_string(events.size());
+    std::string encode_trading_response(
+        const TradingResponse& response) {
+        const bool include_events = is_successful(response.result);
+        const std::size_t event_count =
+            include_events ? response.events.size() : 0;
+        OrderId assigned_order_id = 0;
+        if (response.result == TradingResult::Accepted) {
+            if (!response.assigned_order_id.has_value()
+                || *response.assigned_order_id == 0) {
+                throw std::invalid_argument(
+                    "accepted response is missing assigned order ID");
+            }
+            assigned_order_id = *response.assigned_order_id;
+        }
+
+        std::string output = "RESULT ";
+        output += std::to_string(response.request_id);
+        output += ' ';
+        output += trading_result_name(response.result);
+        output += ' ';
+        output += std::to_string(assigned_order_id);
+        output += ' ';
+        output += std::to_string(event_count);
         output += '\n';
-        for (const Event& event : events) {
-            append_event(output, event);
+
+        if (include_events) {
+            for (const Event& event : response.events) {
+                append_event(output, event);
+            }
         }
         return output;
     }
@@ -236,11 +310,6 @@ namespace exchange {
         switch (error.code) {
             case ProtocolErrorCode::MalformedCommand:
                 return "ERR MALFORMED_COMMAND\n";
-            case ProtocolErrorCode::InvalidOrder:
-                return "ERR INVALID_ORDER\n";
-            case ProtocolErrorCode::CancelNotFound:
-                return "ERR CANCEL_NOT_FOUND " +
-                    std::to_string(error.order_id) + "\n";
             case ProtocolErrorCode::LineTooLong:
                 return "ERR LINE_TOO_LONG\n";
         }

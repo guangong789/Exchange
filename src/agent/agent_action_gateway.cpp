@@ -1,6 +1,5 @@
 #include "exchange/agent/agent_action_gateway.hpp"
 
-#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <variant>
@@ -8,9 +7,11 @@
 namespace exchange {
     AgentActionGateway::AgentActionGateway(
         const AgentRegistry& registry,
-        ExecutionCoordinator& execution_coordinator) noexcept
+        ExecutionCoordinator& execution_coordinator,
+        ExecutionSequencer& sequencer) noexcept
         : registry_(registry),
-          execution_coordinator_(execution_coordinator) {}
+          execution_coordinator_(execution_coordinator),
+          sequencer_(sequencer) {}
 
     AgentActionResult AgentActionGateway::execute(
         AgentId agent_id,
@@ -25,30 +26,30 @@ namespace exchange {
                 const auto& payload) -> AgentActionResult {
                 using Action = std::decay_t<decltype(payload)>;
                 if constexpr (std::is_same_v<Action, SubmitOrderAction>) {
-                    if (next_order_id_
-                            == std::numeric_limits<OrderId>::max()
-                        || next_timestamp_
-                               == std::numeric_limits<Timestamp>::max()) {
-                        throw std::overflow_error(
-                            "Agent action sequence is exhausted");
+                    if ((payload.side != Side::Buy
+                            && payload.side != Side::Sell)
+                        || payload.price <= 0 || payload.quantity <= 0) {
+                        return SubmitActionResult{
+                            0,
+                            0,
+                            SubmitResult::InvalidOrder};
                     }
-
-                    const OrderId order_id = next_order_id_++;
-                    const Timestamp timestamp = next_timestamp_++;
+                    const AssignedOrderIdentity identity =
+                        sequencer_.allocate();
                     const SubmitResult result =
                         execution_coordinator_.submit_order(
                             OrderAdmissionRequest{
                                 account_id,
                                 Order{
-                                    order_id,
+                                    identity.order_id,
                                     payload.side,
                                     OrderType::Limit,
                                     payload.price,
                                     payload.quantity,
-                                    timestamp}});
+                                    identity.timestamp}});
                     return SubmitActionResult{
-                        order_id,
-                        timestamp,
+                        identity.order_id,
+                        identity.timestamp,
                         result};
                 } else if constexpr (std::is_same_v<
                                          Action,

@@ -56,6 +56,11 @@ namespace exchange {
         return balance->second;
     }
 
+    const AccountStore::AccountBalances&
+    AccountStore::entries() const noexcept {
+        return accounts_;
+    }
+
     void AccountStore::fund(
         AccountId account_id,
         AssetId asset_id,

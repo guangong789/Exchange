@@ -63,6 +63,7 @@ namespace exchange {
                 matching_engine,
                 events,
                 ledger};
+            ExecutionSequencer sequencer;
             AgentRegistry registry;
             AgentObservationService observations{
                 registry,
@@ -71,7 +72,8 @@ namespace exchange {
                 test_instrument};
             AgentActionGateway actions{
                 registry,
-                execution_coordinator};
+                execution_coordinator,
+                sequencer};
         };
 
         void create_agent(

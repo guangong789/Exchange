@@ -18,6 +18,9 @@ namespace exchange {
 
     class AccountStore {
     public:
+        using AssetBalances = std::map<AssetId, Balance>;
+        using AccountBalances = std::map<AccountId, AssetBalances>;
+
         AccountStore() = default;
         AccountStore(const AccountStore&) = delete;
         AccountStore& operator=(const AccountStore&) = delete;
@@ -29,6 +32,7 @@ namespace exchange {
         [[nodiscard]] std::optional<Balance> find_balance(
             AccountId account_id,
             AssetId asset_id) const;
+        [[nodiscard]] const AccountBalances& entries() const noexcept;
 
         // Bootstrap/test funding only. This is not a general financial
         // mutation API.
@@ -58,7 +62,6 @@ namespace exchange {
             Amount amount);
 
     private:
-        using AssetBalances = std::map<AssetId, Balance>;
-        std::map<AccountId, AssetBalances> accounts_;
+        AccountBalances accounts_;
     };
 }  // namespace exchange

@@ -26,9 +26,18 @@ add_library(exchange_core
     src/accounting/financial_conversion.cpp
     src/accounting/funding_coordinator.cpp
     src/accounting/ledger.cpp
+    src/execution/execution_command_applier.cpp
+    src/execution/execution_sequencer.cpp
+    src/execution/trading_request_admission.cpp
+    src/execution/trading_request_executor.cpp
+    src/execution/trading_runtime.cpp
+    src/execution/trading_bootstrap.cpp
     src/matching/matching_engine.cpp
     src/matching/order_book.cpp
     src/accounting/order_reservation_store.cpp
+    src/durability/execution_wal.cpp
+    src/durability/execution_recovery.cpp
+    src/durability/execution_wal_writer.cpp
     src/replay/replay_engine.cpp
     src/replay/workload_generator.cpp
 )
@@ -274,6 +283,14 @@ if(EXCHANGE_BUILD_TESTS)
         tests/agent/agent_objective_test.cpp
         tests/arena/arena_test.cpp
         tests/core/bounded_queue_test.cpp
+        tests/durability/execution_wal_test.cpp
+        tests/durability/execution_wal_writer_test.cpp
+        tests/durability/durable_execution_test.cpp
+        tests/durability/execution_recovery_test.cpp
+        tests/execution/execution_command_test.cpp
+        tests/execution/trading_bootstrap_test.cpp
+        tests/execution/trading_request_executor_test.cpp
+        tests/execution/trading_runtime_test.cpp
         tests/binance/binance_agent_os_test.cpp
         tests/accounting/execution_coordinator_test.cpp
         tests/matching/event_system_test.cpp

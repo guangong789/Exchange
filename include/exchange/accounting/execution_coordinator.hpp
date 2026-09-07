@@ -19,6 +19,7 @@ namespace exchange {
 
     enum class SubmitResult {
         Accepted,
+        AccountNotFound,
         InsufficientFunds,
         DuplicateOrder,
         InvalidOrder,
@@ -27,6 +28,7 @@ namespace exchange {
 
     enum class CancelResult {
         Cancelled,
+        AccountNotFound,
         NotFound,
         NotOwner,
     };

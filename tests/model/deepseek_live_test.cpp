@@ -42,13 +42,17 @@ namespace exchange {
                 matching_engine,
                 events,
                 ledger};
+            ExecutionSequencer sequencer;
             AgentRegistry registry;
             AgentObservationService observations{
                 registry,
                 accounts,
                 matching_engine.order_book(),
                 test_instrument};
-            AgentActionGateway actions{registry, execution_coordinator};
+            AgentActionGateway actions{
+                registry,
+                execution_coordinator,
+                sequencer};
         };
 
         class DeepSeekLiveTest : public ::testing::Test {
@@ -95,6 +99,8 @@ namespace exchange {
                         switch (payload.result) {
                             case SubmitResult::Accepted:
                                 return "ACCEPTED";
+                            case SubmitResult::AccountNotFound:
+                                return "ACCOUNT_NOT_FOUND";
                             case SubmitResult::InsufficientFunds:
                                 return "INSUFFICIENT_FUNDS";
                             case SubmitResult::DuplicateOrder:
@@ -110,6 +116,8 @@ namespace exchange {
                         switch (payload.result) {
                             case CancelResult::Cancelled:
                                 return "CANCELLED";
+                            case CancelResult::AccountNotFound:
+                                return "ACCOUNT_NOT_FOUND";
                             case CancelResult::NotFound:
                                 return "NOT_FOUND";
                             case CancelResult::NotOwner:

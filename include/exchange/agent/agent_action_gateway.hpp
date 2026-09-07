@@ -5,13 +5,15 @@
 #include "exchange/agent/agent.hpp"
 #include "exchange/agent/agent_registry.hpp"
 #include "exchange/accounting/execution_coordinator.hpp"
+#include "exchange/execution/execution_sequencer.hpp"
 
 namespace exchange {
     class AgentActionGateway {
     public:
         AgentActionGateway(
             const AgentRegistry& registry,
-            ExecutionCoordinator& execution_coordinator) noexcept;
+            ExecutionCoordinator& execution_coordinator,
+            ExecutionSequencer& sequencer) noexcept;
 
         AgentActionGateway(const AgentActionGateway&) = delete;
         AgentActionGateway& operator=(const AgentActionGateway&) = delete;
@@ -25,7 +27,6 @@ namespace exchange {
     private:
         const AgentRegistry& registry_;
         ExecutionCoordinator& execution_coordinator_;
-        OrderId next_order_id_{1};
-        Timestamp next_timestamp_{1};
+        ExecutionSequencer& sequencer_;
     };
 }  // namespace exchange

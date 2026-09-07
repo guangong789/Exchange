@@ -1,10 +1,9 @@
 #include "exchange/gateway/tcp_gateway.hpp"
 
 #include <exception>
+#include <memory>
 #include <optional>
-#include <span>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -13,9 +12,11 @@
 namespace exchange {
     TcpGateway::TcpGateway(
         std::uint16_t port,
+        std::unique_ptr<TradingRuntime> runtime,
         std::size_t command_queue_capacity,
         std::size_t response_queue_capacity)
-        : command_queue_(command_queue_capacity),
+        : runtime_(std::move(runtime)),
+          command_queue_(command_queue_capacity),
           response_queue_(response_queue_capacity),
           server_(
               port,
@@ -26,13 +27,16 @@ namespace exchange {
                   handle_line(connection_id, line);
               },
               [this] { handle_wakeup(); }) {
-        matching_thread_ = std::thread(&TcpGateway::matching_loop, this);
+        if (!runtime_) {
+            throw std::invalid_argument("trading runtime must not be null");
+        }
+        execution_thread_ = std::thread(&TcpGateway::execution_loop, this);
     }
 
     TcpGateway::~TcpGateway() {
         request_stop();
-        if (matching_thread_.joinable()) {
-            matching_thread_.join();
+        if (execution_thread_.joinable()) {
+            execution_thread_.join();
         }
     }
 
@@ -76,7 +80,7 @@ namespace exchange {
         std::string_view line) {
         CommandEnvelope envelope{
             connection_id,
-            parse_command(line)};
+            parse_trading_request(line)};
         if (!command_queue_.try_push(std::move(envelope))) {
             static_cast<void>(server_.request_close(connection_id));
             return;
@@ -100,27 +104,14 @@ namespace exchange {
         rethrow_worker_failure();
     }
 
-    void TcpGateway::matching_loop() noexcept {
+    void TcpGateway::execution_loop() noexcept {
         try {
-            EventCollector event_collector;
-            MatchingEngine matching_engine{event_collector};
-
             while (std::optional<CommandEnvelope> envelope =
                        command_queue_.wait_pop()) {
-                event_collector.clear();
+                std::string response = execute_request(
+                    envelope->request,
+                    runtime_->executor());
 
-                std::string response;
-                try {
-                    response = execute_request(
-                        envelope->request,
-                        matching_engine,
-                        event_collector);
-                } catch (...) {
-                    event_collector.clear();
-                    throw;
-                }
-
-                event_collector.clear();
                 if (!response_queue_.wait_push(ResponseEnvelope{
                         envelope->connection_id,
                         std::move(response)})) {
@@ -142,46 +133,12 @@ namespace exchange {
     }
 
     std::string TcpGateway::execute_request(
-        const CommandParseResult& request,
-        MatchingEngine& matching_engine,
-        EventCollector& event_collector) {
+        const TradingRequestParseResult& request,
+        TradingRequestExecutor& executor) {
         if (const auto* error = std::get_if<ProtocolError>(&request)) {
             return encode_error(*error);
         }
-        return execute_command(
-            std::get<Command>(request),
-            matching_engine,
-            event_collector);
-    }
-
-    std::string TcpGateway::execute_command(
-        const Command& command,
-        MatchingEngine& matching_engine,
-        EventCollector& event_collector) {
-        return std::visit(
-            [&matching_engine,
-             &event_collector](const auto& payload) -> std::string {
-                using Payload = std::decay_t<decltype(payload)>;
-
-                if constexpr (std::is_same_v<Payload, AddOrder>) {
-                    try {
-                        static_cast<void>(
-                            matching_engine.add_order(payload.order));
-                    } catch (const std::invalid_argument&) {
-                        return encode_error(ProtocolError{
-                            ProtocolErrorCode::InvalidOrder, 0});
-                    }
-                } else if constexpr (std::is_same_v<Payload, CancelOrder>) {
-                    if (!matching_engine.cancel_order(payload.order_id)) {
-                        return encode_error(ProtocolError{
-                            ProtocolErrorCode::CancelNotFound,
-                            payload.order_id});
-                    }
-                }
-
-                const auto& events = event_collector.events();
-                return encode_success(std::span<const Event>{events});
-            },
-            command.payload);
+        return encode_trading_response(
+            executor.execute(std::get<TradingRequest>(request)));
     }
 }  // namespace exchange

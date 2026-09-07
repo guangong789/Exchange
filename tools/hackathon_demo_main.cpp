@@ -67,6 +67,7 @@ struct Options {
         if constexpr (std::is_same_v<Result, SubmitActionResult>) {
             switch (value.result) {
                 case SubmitResult::Accepted: return "Accepted";
+                case SubmitResult::AccountNotFound: return "AccountNotFound";
                 case SubmitResult::InsufficientFunds: return "InsufficientFunds";
                 case SubmitResult::DuplicateOrder: return "DuplicateOrder";
                 case SubmitResult::InvalidOrder: return "InvalidOrder";
@@ -75,6 +76,7 @@ struct Options {
         } else if constexpr (std::is_same_v<Result, CancelActionResult>) {
             switch (value.result) {
                 case CancelResult::Cancelled: return "Cancelled";
+                case CancelResult::AccountNotFound: return "AccountNotFound";
                 case CancelResult::NotFound: return "NotFound";
                 case CancelResult::NotOwner: return "NotOwner";
             }
