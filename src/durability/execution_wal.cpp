@@ -1,4 +1,4 @@
-#include "exchange/durability/execution_wal.hpp"
+#include "durability/execution_wal.hpp"
 
 #include <algorithm>
 #include <array>

@@ -29,8 +29,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "exchange/gateway/tcp_gateway.hpp"
-#include "exchange/core/types.hpp"
+#include "gateway/tcp_gateway.hpp"
+#include "core/types.hpp"
 
 namespace exchange {
     namespace {
@@ -39,10 +39,13 @@ namespace exchange {
 
         constexpr std::size_t kDefaultThroughputCommandCount = 1'000'000;
         constexpr std::size_t kDefaultLatencyCommandCount = 100'000;
+        constexpr std::size_t kDefaultDurableCommandCount = 1'000;
         constexpr std::size_t kDefaultCommandPressureCommandCount = 64;
         constexpr std::size_t kDefaultSlowReaderCommandCount = 100'000;
         constexpr std::size_t kDefaultWarmupCommandCount = 10'000;
+        constexpr std::size_t kDefaultDurableWarmupCommandCount = 100;
         constexpr std::size_t kDefaultRepetitions = 10;
+        constexpr std::size_t kDefaultDurableRepetitions = 3;
         constexpr std::size_t kDefaultStressRepetitions = 1;
         constexpr std::size_t kThroughputOutstandingWindow = 8;
         constexpr std::size_t kLatencyOutstandingWindow = 1;
@@ -68,8 +71,76 @@ namespace exchange {
         constexpr std::string_view kSlowReaderWorkloadName =
             "slow-reader-output-limit-v1";
 
-        std::unique_ptr<TradingRuntime> make_benchmark_runtime() {
+        enum class DurabilityMode {
+            NonDurable,
+            Durable,
+        };
+
+        class ScopedTemporaryWal {
+        public:
+            ScopedTemporaryWal() {
+                std::string pattern =
+                    "/tmp/exchange-gateway-benchmark-XXXXXX";
+                const int fd = ::mkstemp(pattern.data());
+                if (fd == -1) {
+                    throw std::system_error(
+                        errno,
+                        std::generic_category(),
+                        "create benchmark WAL");
+                }
+                path_ = std::move(pattern);
+                if (::close(fd) == -1) {
+                    const int close_error = errno;
+                    static_cast<void>(::unlink(path_.c_str()));
+                    throw std::system_error(
+                        close_error,
+                        std::generic_category(),
+                        "close benchmark WAL");
+                }
+            }
+
+            ~ScopedTemporaryWal() {
+                if (!path_.empty()) {
+                    static_cast<void>(::unlink(path_.c_str()));
+                }
+            }
+
+            ScopedTemporaryWal(const ScopedTemporaryWal&) = delete;
+            ScopedTemporaryWal& operator=(const ScopedTemporaryWal&) = delete;
+
+            [[nodiscard]] const std::string& path() const noexcept {
+                return path_;
+            }
+
+        private:
+            std::string path_;
+        };
+
+        [[nodiscard]] TradingBootstrapConfig benchmark_bootstrap(
+            const InstrumentContext& instrument) {
+            return TradingBootstrapConfig{{
+                BootstrapAccount{
+                    kSellerAccountId,
+                    {{instrument.base_asset, {kBenchmarkInitialBalance, 0}},
+                     {instrument.quote_asset, {kBenchmarkInitialBalance, 0}}}},
+                BootstrapAccount{
+                    kBuyerAccountId,
+                    {{instrument.base_asset, {kBenchmarkInitialBalance, 0}},
+                     {instrument.quote_asset, {kBenchmarkInitialBalance, 0}}}},
+            }};
+        }
+
+        std::unique_ptr<TradingRuntime> make_benchmark_runtime(
+            DurabilityMode durability,
+            std::string_view wal_path = {}) {
             constexpr InstrumentContext instrument{20, 10, 1, 1, 1};
+            if (durability == DurabilityMode::Durable) {
+                return TradingRuntime::create_durable(
+                    instrument,
+                    std::string{wal_path},
+                    benchmark_bootstrap(instrument));
+            }
+
             auto runtime = std::make_unique<TradingRuntime>(instrument);
             for (const AccountId account_id : {
                      kSellerAccountId,
@@ -99,6 +170,7 @@ namespace exchange {
 
         struct BenchmarkConfig {
             Scenario scenario{Scenario::Throughput};
+            DurabilityMode durability{DurabilityMode::NonDurable};
             std::vector<std::size_t> client_counts{1};
             std::size_t command_count{kDefaultThroughputCommandCount};
             std::size_t warmup_command_count{kDefaultWarmupCommandCount};
@@ -175,7 +247,20 @@ namespace exchange {
                     kDefaultResponseQueueCapacity)
                 : gateway_(
                       0,
-                      make_benchmark_runtime(),
+                      make_benchmark_runtime(DurabilityMode::NonDurable),
+                      command_queue_capacity,
+                      response_queue_capacity),
+                  io_thread_([this] { run_io_loop(); }) {}
+
+            explicit RunningGateway(
+                std::unique_ptr<TradingRuntime> runtime,
+                std::size_t command_queue_capacity =
+                    kDefaultCommandQueueCapacity,
+                std::size_t response_queue_capacity =
+                    kDefaultResponseQueueCapacity)
+                : gateway_(
+                      0,
+                      std::move(runtime),
                       command_queue_capacity,
                       response_queue_capacity),
                   io_thread_([this] { run_io_loop(); }) {}
@@ -708,6 +793,13 @@ namespace exchange {
             throw std::logic_error("unknown benchmark scenario");
         }
 
+        [[nodiscard]] std::string_view durability_name(
+            DurabilityMode durability) {
+            return durability == DurabilityMode::Durable
+                ? "durable-per-command-fdatasync"
+                : "non-durable";
+        }
+
         [[nodiscard]] std::size_t scenario_window(Scenario scenario) {
             switch (scenario) {
                 case Scenario::Throughput:
@@ -754,6 +846,7 @@ namespace exchange {
                 << "Usage: exchange_gateway_benchmark [options]\n\n"
                 << "Options:\n"
                 << "  --scenario throughput|latency|command-pressure|slow-reader\n"
+                << "  --durability non-durable|durable\n"
                 << "  --clients 1|4|16|64|all\n"
                 << "  --commands N\n"
                 << "  --warmup-commands N\n"
@@ -761,19 +854,26 @@ namespace exchange {
                 << "  --help\n\n"
                 << "Defaults:\n"
                 << "  scenario: throughput\n"
+                << "  durability: non-durable\n"
                 << "  clients: 1\n"
                 << "  throughput commands: "
                 << kDefaultThroughputCommandCount << '\n'
                 << "  latency commands: "
                 << kDefaultLatencyCommandCount << '\n'
+                << "  durable throughput/latency commands: "
+                << kDefaultDurableCommandCount << '\n'
                 << "  command-pressure burst commands: "
                 << kDefaultCommandPressureCommandCount << '\n'
                 << "  slow-reader maximum commands: "
                 << kDefaultSlowReaderCommandCount << '\n'
                 << "  warmup commands: "
                 << kDefaultWarmupCommandCount << '\n'
+                << "  durable warmup commands: "
+                << kDefaultDurableWarmupCommandCount << '\n'
                 << "  performance repetitions: "
                 << kDefaultRepetitions << '\n'
+                << "  durable repetitions: "
+                << kDefaultDurableRepetitions << '\n'
                 << "  stress repetitions: "
                 << kDefaultStressRepetitions << "\n\n"
                 << "Use --clients all to run the standard 1/4/16/64 matrix.\n";
@@ -794,6 +894,7 @@ namespace exchange {
                     std::exit(0);
                 }
                 if (argument != "--scenario" &&
+                    argument != "--durability" &&
                     argument != "--clients" &&
                     argument != "--commands" &&
                     argument != "--warmup-commands" &&
@@ -820,6 +921,17 @@ namespace exchange {
                         throw std::invalid_argument(
                             "--scenario must be throughput, latency, "
                             "command-pressure, or slow-reader");
+                    }
+                    continue;
+                }
+                if (argument == "--durability") {
+                    if (value == "non-durable") {
+                        config.durability = DurabilityMode::NonDurable;
+                    } else if (value == "durable") {
+                        config.durability = DurabilityMode::Durable;
+                    } else {
+                        throw std::invalid_argument(
+                            "--durability must be non-durable or durable");
                     }
                     continue;
                 }
@@ -854,11 +966,15 @@ namespace exchange {
             switch (config.scenario) {
                 case Scenario::Throughput:
                     config.command_count = command_count_override.value_or(
-                        kDefaultThroughputCommandCount);
+                        config.durability == DurabilityMode::Durable
+                            ? kDefaultDurableCommandCount
+                            : kDefaultThroughputCommandCount);
                     break;
                 case Scenario::Latency:
                     config.command_count = command_count_override.value_or(
-                        kDefaultLatencyCommandCount);
+                        config.durability == DurabilityMode::Durable
+                            ? kDefaultDurableCommandCount
+                            : kDefaultLatencyCommandCount);
                     break;
                 case Scenario::CommandPressure:
                     config.command_count = command_count_override.value_or(
@@ -871,11 +987,15 @@ namespace exchange {
             }
             config.warmup_command_count = warmup_count_override.value_or(
                 is_performance_scenario(config.scenario)
-                    ? kDefaultWarmupCommandCount
+                    ? config.durability == DurabilityMode::Durable
+                        ? kDefaultDurableWarmupCommandCount
+                        : kDefaultWarmupCommandCount
                     : 0);
             config.repetitions = repetitions_override.value_or(
                 is_performance_scenario(config.scenario)
-                    ? kDefaultRepetitions
+                    ? config.durability == DurabilityMode::Durable
+                        ? kDefaultDurableRepetitions
+                        : kDefaultRepetitions
                     : kDefaultStressRepetitions);
 
             if (config.repetitions == 0) {
@@ -884,6 +1004,10 @@ namespace exchange {
             }
 
             if (!is_performance_scenario(config.scenario)) {
+                if (config.durability == DurabilityMode::Durable) {
+                    throw std::invalid_argument(
+                        "durable mode is supported only for throughput and latency");
+                }
                 if (config.clients_were_explicit) {
                     throw std::invalid_argument(
                         "--clients is not used by stress scenarios; "
@@ -1773,7 +1897,17 @@ namespace exchange {
             const bool collect_latencies =
                 config.scenario == Scenario::Latency;
 
-            RunningGateway gateway;
+            std::unique_ptr<ScopedTemporaryWal> temporary_wal;
+            std::unique_ptr<TradingRuntime> runtime;
+            if (config.durability == DurabilityMode::Durable) {
+                temporary_wal = std::make_unique<ScopedTemporaryWal>();
+                runtime = make_benchmark_runtime(
+                    config.durability,
+                    temporary_wal->path());
+            } else {
+                runtime = make_benchmark_runtime(config.durability);
+            }
+            RunningGateway gateway{std::move(runtime)};
             const std::vector<ScopedFd> clients =
                 connect_clients(client_count, gateway.local_port());
 
@@ -2209,6 +2343,8 @@ namespace exchange {
             std::cout
                 << "scenario: " << scenario_name(config.scenario) << '\n'
                 << "execution_scope: full-account-backed-loopback-tcp\n"
+                << "durability: "
+                << durability_name(config.durability) << '\n'
                 << "clients: ";
             for (std::size_t index = 0;
                  index < config.client_counts.size();
@@ -2449,12 +2585,21 @@ namespace exchange {
 
                 LatencySummary repetition_summary =
                     summarize_latencies(result.latencies);
+                const double seconds = elapsed_seconds(result);
+                const double commands_per_second =
+                    static_cast<double>(result.completed_responses) / seconds;
+                const double trades_per_second =
+                    static_cast<double>(result.trade_count) / seconds;
                 std::cout << std::fixed << std::setprecision(3)
                           << "run scenario=latency clients="
                           << client_count
                           << " repetition=" << repetition
                           << " samples="
                           << repetition_summary.sample_count
+                          << " commands_per_second="
+                          << commands_per_second
+                          << " trades_per_second="
+                          << trades_per_second
                           << " p50_us="
                           << microseconds(repetition_summary.p50)
                           << " p95_us="

@@ -1,4 +1,4 @@
-#include "exchange/durability/execution_recovery.hpp"
+#include "durability/execution_recovery.hpp"
 
 #include <exception>
 #include <limits>

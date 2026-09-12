@@ -1,12 +1,12 @@
-#include "exchange/replay/workload_generator.hpp"
+#include "replay/workload_generator.hpp"
 
 #include <limits>
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
 
-#include "exchange/matching/event_collector.hpp"
-#include "exchange/matching/matching_engine.hpp"
+#include "matching/event_collector.hpp"
+#include "matching/matching_engine.hpp"
 
 namespace exchange {
     namespace {

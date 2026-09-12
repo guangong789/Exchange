@@ -1,4 +1,4 @@
-#include "exchange/durability/execution_wal_writer.hpp"
+#include "durability/execution_wal_writer.hpp"
 
 #include <cerrno>
 #include <cstdint>

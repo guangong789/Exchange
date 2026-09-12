@@ -1,4 +1,4 @@
-#include "exchange/accounting/account_store.hpp"
+#include "accounting/account_store.hpp"
 
 #include <initializer_list>
 #include <limits>

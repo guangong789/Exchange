@@ -1,4 +1,4 @@
-#include "exchange/replay/workload_generator.hpp"
+#include "replay/workload_generator.hpp"
 
 #include <cstddef>
 #include <stdexcept>
@@ -8,9 +8,9 @@
 
 #include <gtest/gtest.h>
 
-#include "exchange/matching/event_collector.hpp"
-#include "exchange/matching/matching_engine.hpp"
-#include "exchange/replay/replay_engine.hpp"
+#include "matching/event_collector.hpp"
+#include "matching/matching_engine.hpp"
+#include "replay/replay_engine.hpp"
 
 namespace exchange {
     namespace {

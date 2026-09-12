@@ -1,4 +1,4 @@
-#include "exchange/protocol/line_protocol.hpp"
+#include "protocol/line_protocol.hpp"
 
 #include <array>
 #include <optional>

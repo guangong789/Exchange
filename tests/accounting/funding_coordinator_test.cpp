@@ -1,4 +1,4 @@
-#include "exchange/accounting/funding_coordinator.hpp"
+#include "accounting/funding_coordinator.hpp"
 
 #include <limits>
 #include <stdexcept>

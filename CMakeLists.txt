@@ -4,24 +4,12 @@ project(crypto_exchange_simulator VERSION 1.0.0 LANGUAGES CXX)
 
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
-option(EXCHANGE_ENABLE_LIVE_MODEL_TESTS "Enable live provider smoke tests" OFF)
-option(EXCHANGE_ENABLE_BINANCE_AGENT_OS_TESTS
-    "Enable live Binance Agent OS smoke test" OFF)
-option(EXCHANGE_ENABLE_BINANCE_WALLET_TESTS
-    "Enable live Binance Agentic Wallet preview smoke test" OFF)
-
+option(EXCHANGE_BUILD_DEEPSEEK_PROVIDER "Build the DeepSeek agent provider" ON)
+option(EXCHANGE_BUILD_BINANCE_ALPHA_FEED "Build the Binance Alpha market feed" ON)
 find_package(Threads REQUIRED)
-find_package(CURL REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(exchange_core
     src/accounting/account_store.cpp
-    src/agent/agent.cpp
-    src/agent/agent_action_gateway.cpp
-    src/agent/agent_observation_service.cpp
-    src/agent/agent_objective.cpp
-    src/agent/agent_registry.cpp
-    src/arena/arena.cpp
     src/accounting/execution_coordinator.cpp
     src/accounting/financial_conversion.cpp
     src/accounting/funding_coordinator.cpp
@@ -55,95 +43,6 @@ else()
     target_compile_options(exchange_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_library(exchange_binance_agent_os
-    src/binance/binance_agent_os_client.cpp
-)
-add_library(exchange::binance_agent_os ALIAS exchange_binance_agent_os)
-
-target_link_libraries(exchange_binance_agent_os
-    PUBLIC exchange::core
-    PRIVATE CURL::libcurl nlohmann_json::nlohmann_json
-)
-target_compile_features(exchange_binance_agent_os PUBLIC cxx_std_20)
-target_include_directories(exchange_binance_agent_os
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-)
-
-if(MSVC)
-    target_compile_options(exchange_binance_agent_os PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(exchange_binance_agent_os
-        PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-add_library(exchange_model
-    src/model/deepseek_adapter.cpp
-    src/model/model_agent_policy.cpp
-    src/model/model_decision.cpp
-)
-add_library(exchange::model ALIAS exchange_model)
-
-target_link_libraries(exchange_model
-    PUBLIC exchange::core
-    PRIVATE CURL::libcurl nlohmann_json::nlohmann_json
-)
-target_compile_features(exchange_model PUBLIC cxx_std_20)
-target_include_directories(exchange_model
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-)
-
-if(MSVC)
-    target_compile_options(exchange_model PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(exchange_model PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-add_library(exchange_hackathon_demo_lib
-    src/hackathon/hackathon_demo.cpp
-    src/hackathon/live_x402_evidence.cpp
-)
-add_library(exchange::hackathon_demo ALIAS exchange_hackathon_demo_lib)
-
-target_link_libraries(exchange_hackathon_demo_lib
-    PUBLIC exchange::core exchange::model)
-target_compile_features(exchange_hackathon_demo_lib PUBLIC cxx_std_20)
-target_include_directories(exchange_hackathon_demo_lib
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-)
-
-if(MSVC)
-    target_compile_options(exchange_hackathon_demo_lib PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(exchange_hackathon_demo_lib PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-add_executable(exchange_hackathon_demo
-    tools/hackathon_demo_main.cpp
-)
-target_link_libraries(exchange_hackathon_demo
-    PRIVATE exchange::hackathon_demo nlohmann_json::nlohmann_json)
-target_compile_features(exchange_hackathon_demo PRIVATE cxx_std_20)
-if(MSVC)
-    target_compile_options(exchange_hackathon_demo PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(exchange_hackathon_demo PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-add_executable(exchange_hackathon_ui_bridge
-    tools/hackathon_ui_bridge_main.cpp
-)
-target_link_libraries(exchange_hackathon_ui_bridge
-    PRIVATE exchange::hackathon_demo nlohmann_json::nlohmann_json)
-target_compile_features(exchange_hackathon_ui_bridge PRIVATE cxx_std_20)
-if(MSVC)
-    target_compile_options(exchange_hackathon_ui_bridge PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(exchange_hackathon_ui_bridge PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
 add_library(exchange_protocol
     src/protocol/line_protocol.cpp
 )
@@ -163,42 +62,6 @@ else()
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_library(exchange_x402
-        src/x402/x402.cpp
-    )
-    add_library(exchange::x402 ALIAS exchange_x402)
-
-    target_link_libraries(exchange_x402
-        PRIVATE CURL::libcurl nlohmann_json::nlohmann_json
-    )
-    target_compile_features(exchange_x402 PUBLIC cxx_std_20)
-    target_include_directories(exchange_x402
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    )
-    target_compile_options(exchange_x402 PRIVATE -Wall -Wextra -Wpedantic)
-
-    add_library(exchange_binance_agentic_wallet
-        src/binance/binance_agentic_wallet.cpp
-    )
-    add_library(exchange::binance_agentic_wallet
-        ALIAS exchange_binance_agentic_wallet)
-
-    target_link_libraries(exchange_binance_agentic_wallet
-        PUBLIC exchange::x402
-        PRIVATE nlohmann_json::nlohmann_json
-    )
-    target_compile_features(exchange_binance_agentic_wallet PUBLIC cxx_std_20)
-    target_include_directories(exchange_binance_agentic_wallet
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    )
-    target_compile_options(exchange_binance_agentic_wallet
-        PRIVATE -Wall -Wextra -Wpedantic)
-
-    target_link_libraries(exchange_hackathon_demo_lib
-        PUBLIC exchange::binance_agentic_wallet)
-
     add_library(exchange_gateway
         src/gateway/epoll_server.cpp
         src/gateway/tcp_gateway.cpp
@@ -217,11 +80,86 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(exchange_gateway PRIVATE -Wall -Wextra -Wpedantic)
 
     add_executable(exchange_server
-        apps/gateway_main.cpp
+        apps/exchange_server/main.cpp
     )
     target_link_libraries(exchange_server PRIVATE exchange::gateway)
     target_compile_features(exchange_server PRIVATE cxx_std_20)
     target_compile_options(exchange_server PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# Provider-independent agent components use the exchange through explicit adapters.
+add_library(exchange_agent
+    src/agent/strategy/rule_based_policy.cpp
+    src/agent/domain/action_validation.cpp
+    src/agent/domain/external_market.cpp
+    src/agent/domain/agent_registry.cpp
+    src/agent/exchange/trading_request_agent_execution_adapter.cpp
+    src/agent/exchange/agent_observation_service.cpp
+    src/agent/exchange/agent_objective.cpp
+    src/agent/runtime/agent_runtime.cpp
+)
+add_library(exchange::agent ALIAS exchange_agent)
+target_link_libraries(exchange_agent PUBLIC exchange::core)
+target_compile_features(exchange_agent PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(exchange_agent PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(exchange_agent PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(EXCHANGE_BUILD_BINANCE_ALPHA_FEED)
+    find_package(CURL REQUIRED)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    find_package(OpenSSL REQUIRED)
+    find_package(Boost 1.74 CONFIG REQUIRED)
+
+    add_library(exchange_agent_binance_alpha
+        src/agent/provider/binance_alpha/binance_alpha_market_feed.cpp
+    )
+    add_library(exchange::agent_binance_alpha
+        ALIAS exchange_agent_binance_alpha)
+    target_link_libraries(exchange_agent_binance_alpha
+        PUBLIC exchange::agent
+        PRIVATE
+            CURL::libcurl
+            nlohmann_json::nlohmann_json
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            Threads::Threads
+    )
+    target_compile_definitions(exchange_agent_binance_alpha
+        PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
+    target_compile_features(exchange_agent_binance_alpha PUBLIC cxx_std_20)
+    if(MSVC)
+        target_compile_options(
+            exchange_agent_binance_alpha PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(
+            exchange_agent_binance_alpha PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()
+
+if(EXCHANGE_BUILD_DEEPSEEK_PROVIDER)
+    find_package(CURL REQUIRED)
+    find_package(nlohmann_json CONFIG REQUIRED)
+
+    add_library(exchange_agent_deepseek
+        src/agent/provider/deepseek/deepseek_client.cpp
+        src/agent/provider/deepseek/deepseek_decision_provider.cpp
+    )
+    add_library(exchange::agent_deepseek ALIAS exchange_agent_deepseek)
+    target_link_libraries(exchange_agent_deepseek
+        PUBLIC exchange::agent
+        PRIVATE CURL::libcurl nlohmann_json::nlohmann_json
+    )
+    target_compile_features(exchange_agent_deepseek PUBLIC cxx_std_20)
+    if(MSVC)
+        target_compile_options(
+            exchange_agent_deepseek PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(
+            exchange_agent_deepseek PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 if(EXCHANGE_BUILD_BENCHMARKS)
@@ -256,6 +194,17 @@ if(EXCHANGE_BUILD_BENCHMARKS)
         target_compile_options(exchange_gateway_benchmark
             PRIVATE -Wall -Wextra -Wpedantic
         )
+
+        add_executable(exchange_recovery_benchmark
+            benchmarks/recovery_benchmark.cpp
+        )
+        target_link_libraries(exchange_recovery_benchmark
+            PRIVATE exchange::core
+        )
+        target_compile_features(exchange_recovery_benchmark PRIVATE cxx_std_20)
+        target_compile_options(exchange_recovery_benchmark
+            PRIVATE -Wall -Wextra -Wpedantic
+        )
     endif()
 endif()
 
@@ -279,9 +228,6 @@ if(EXCHANGE_BUILD_TESTS)
     set(EXCHANGE_TEST_SOURCES
         tests/accounting/account_reservation_integration_test.cpp
         tests/accounting/account_store_test.cpp
-        tests/agent/agent_foundation_test.cpp
-        tests/agent/agent_objective_test.cpp
-        tests/arena/arena_test.cpp
         tests/core/bounded_queue_test.cpp
         tests/durability/execution_wal_test.cpp
         tests/durability/execution_wal_writer_test.cpp
@@ -291,73 +237,60 @@ if(EXCHANGE_BUILD_TESTS)
         tests/execution/trading_bootstrap_test.cpp
         tests/execution/trading_request_executor_test.cpp
         tests/execution/trading_runtime_test.cpp
-        tests/binance/binance_agent_os_test.cpp
         tests/accounting/execution_coordinator_test.cpp
         tests/matching/event_system_test.cpp
         tests/accounting/financial_conversion_test.cpp
         tests/accounting/funding_coordinator_test.cpp
-        tests/hackathon/hackathon_demo_test.cpp
-        tests/hackathon/live_x402_evidence_test.cpp
         tests/protocol/line_protocol_test.cpp
         tests/accounting/ledger_test.cpp
-        tests/model/model_agent_policy_test.cpp
-        tests/model/model_decision_test.cpp
         tests/matching/order_book_test.cpp
         tests/accounting/order_reservation_store_test.cpp
         tests/replay/replay_engine_test.cpp
         tests/replay/workload_generator_test.cpp
     )
+    list(APPEND EXCHANGE_TEST_SOURCES
+        tests/agent/exchange/agent_foundation_test.cpp
+        tests/agent/exchange/durable_agent_execution_test.cpp
+        tests/agent/exchange/agent_objective_test.cpp
+        tests/agent/domain/action_validation_test.cpp
+        tests/agent/runtime/agent_runtime_test.cpp)
+    if(TARGET exchange_agent_binance_alpha)
+        list(APPEND EXCHANGE_TEST_SOURCES
+            tests/agent/provider/binance_alpha_market_feed_test.cpp)
+    endif()
+    if(TARGET exchange_agent_deepseek)
+        list(APPEND EXCHANGE_TEST_SOURCES
+            tests/agent/provider/deepseek_decision_provider_test.cpp)
+    endif()
     if(TARGET exchange_gateway)
         list(APPEND EXCHANGE_TEST_SOURCES
             tests/gateway/epoll_server_test.cpp
+            tests/gateway/durable_server_process_test.cpp
             tests/gateway/tcp_gateway_test.cpp
         )
     endif()
-    if(TARGET exchange_x402)
-        list(APPEND EXCHANGE_TEST_SOURCES tests/x402/x402_test.cpp)
-    endif()
-    if(TARGET exchange_binance_agentic_wallet)
-        list(APPEND EXCHANGE_TEST_SOURCES
-            tests/binance/binance_agentic_wallet_test.cpp)
-    endif()
-    if(EXCHANGE_ENABLE_LIVE_MODEL_TESTS)
-        list(APPEND EXCHANGE_TEST_SOURCES
-            tests/model/deepseek_live_test.cpp
-            tests/hackathon/hackathon_demo_live_test.cpp)
-    endif()
-    if(EXCHANGE_ENABLE_BINANCE_AGENT_OS_TESTS)
-        list(APPEND EXCHANGE_TEST_SOURCES
-            tests/binance/binance_agent_os_live_test.cpp)
-    endif()
-    if(EXCHANGE_ENABLE_BINANCE_WALLET_TESTS)
-        if(NOT TARGET exchange_binance_agentic_wallet)
-            message(FATAL_ERROR
-                "Binance Agentic Wallet live tests require Linux")
-        endif()
-        list(APPEND EXCHANGE_TEST_SOURCES
-            tests/binance/binance_agentic_wallet_live_test.cpp)
-    endif()
-
     add_executable(exchange_test ${EXCHANGE_TEST_SOURCES})
     target_link_libraries(exchange_test
         PRIVATE
             exchange::core
-            exchange::binance_agent_os
-            exchange::model
-            exchange::hackathon_demo
+            exchange::agent
             exchange::protocol
             GTest::gtest_main
             Threads::Threads
     )
+    if(TARGET exchange_agent_deepseek)
+        target_link_libraries(exchange_test PRIVATE exchange::agent_deepseek)
+    endif()
+    if(TARGET exchange_agent_binance_alpha)
+        target_link_libraries(exchange_test
+            PRIVATE exchange::agent_binance_alpha)
+    endif()
     if(TARGET exchange_gateway)
         target_link_libraries(exchange_test PRIVATE exchange::gateway)
-    endif()
-    if(TARGET exchange_x402)
-        target_link_libraries(exchange_test PRIVATE exchange::x402)
-    endif()
-    if(TARGET exchange_binance_agentic_wallet)
-        target_link_libraries(exchange_test
-            PRIVATE exchange::binance_agentic_wallet)
+        add_dependencies(exchange_test exchange_server)
+        target_compile_definitions(exchange_test PRIVATE
+            EXCHANGE_SERVER_PATH="$<TARGET_FILE:exchange_server>"
+        )
     endif()
     target_compile_features(exchange_test PRIVATE cxx_std_20)
 

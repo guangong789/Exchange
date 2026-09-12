@@ -1,4 +1,4 @@
-#include "exchange/accounting/account_store.hpp"
+#include "accounting/account_store.hpp"
 
 #include <limits>
 #include <stdexcept>

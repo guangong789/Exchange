@@ -1,6 +1,6 @@
-#include "exchange/execution/trading_runtime.hpp"
+#include "execution/trading_runtime.hpp"
 
-#include "exchange/durability/execution_recovery.hpp"
+#include "durability/execution_recovery.hpp"
 
 #include <stdexcept>
 #include <utility>

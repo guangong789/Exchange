@@ -1,4 +1,4 @@
-#include "exchange/gateway/tcp_gateway.hpp"
+#include "gateway/tcp_gateway.hpp"
 
 #include <exception>
 #include <memory>
@@ -7,7 +7,7 @@
 #include <utility>
 #include <variant>
 
-#include "exchange/protocol/line_protocol.hpp"
+#include "protocol/line_protocol.hpp"
 
 namespace exchange {
     TcpGateway::TcpGateway(

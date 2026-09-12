@@ -1,8 +1,8 @@
-#include "exchange/durability/execution_wal.hpp"
+#include "durability/execution_wal.hpp"
 
-#include "exchange/accounting/execution_coordinator.hpp"
-#include "exchange/execution/execution_command_applier.hpp"
-#include "exchange/execution/execution_sequencer.hpp"
+#include "accounting/execution_coordinator.hpp"
+#include "execution/execution_command_applier.hpp"
+#include "execution/execution_sequencer.hpp"
 
 #include <algorithm>
 #include <cstdint>
