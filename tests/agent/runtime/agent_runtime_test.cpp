@@ -124,7 +124,11 @@ namespace exchange {
                 SubmitOrderAction{Side::Buy, 100, 2});
             AgentRuntime runtime(
                 {{agent_a, &seller, std::nullopt},
-                 {agent_b, &buyer, std::nullopt}},
+                 {agent_b,
+                  &buyer,
+                  std::nullopt,
+                  {},
+                  AgentPreferenceProfile{2, 120, 0}}},
                 world.observations,
                 world.execution,
                 instrument);
@@ -134,6 +138,9 @@ namespace exchange {
             ASSERT_EQ(runtime.trace().size(), 2U);
             EXPECT_EQ(runtime.current_step(), 1U);
             EXPECT_EQ(runtime.trace()[0].status, AgentTurnStatus::Executed);
+            EXPECT_EQ(
+                runtime.trace()[0].economic_constraint,
+                AgentEconomicConstraintResult::Allowed);
             EXPECT_FALSE(runtime.trace()[0]
                              .observation.world.internal_market.best_ask
                              .has_value());
@@ -151,6 +158,32 @@ namespace exchange {
             EXPECT_EQ(
                 world.accounts.find_balance(account_b, 20),
                 (Balance{2, 0}));
+            EXPECT_EQ(runtime.trace()[0].pre_state.active_order_count, 0U);
+            EXPECT_EQ(runtime.trace()[0].post_state.active_order_count, 1U);
+            EXPECT_FALSE(
+                runtime.trace()[0].external_market_context.has_value());
+            EXPECT_EQ(
+                runtime.trace()[1].post_state.base_balance,
+                (Balance{2, 0}));
+            ASSERT_TRUE(runtime.trace()[1].utility_before.has_value());
+            ASSERT_TRUE(runtime.trace()[1].utility_after.has_value());
+            EXPECT_EQ(runtime.trace()[1].utility_before->total, 200);
+            EXPECT_EQ(runtime.trace()[1].utility_after->total, 240);
+            EXPECT_EQ(runtime.trace()[1].utility_delta, 40);
+            const PerAgentExperimentMetrics* seller_metrics =
+                runtime.metrics().find_agent(agent_a);
+            const PerAgentExperimentMetrics* buyer_metrics =
+                runtime.metrics().find_agent(agent_b);
+            ASSERT_NE(seller_metrics, nullptr);
+            ASSERT_NE(buyer_metrics, nullptr);
+            EXPECT_EQ(seller_metrics->proposed_sells, 1U);
+            EXPECT_EQ(buyer_metrics->proposed_buys, 1U);
+            EXPECT_EQ(seller_metrics->successful_executions, 1U);
+            EXPECT_EQ(buyer_metrics->successful_executions, 1U);
+            EXPECT_EQ(runtime.metrics().society().total_turns, 2U);
+            EXPECT_EQ(
+                runtime.metrics().society().total_successful_executions,
+                2U);
         }
 
         TEST(AgentRuntimeTest, RejectedActionDoesNotMutateExchangeState) {
@@ -172,16 +205,105 @@ namespace exchange {
             ASSERT_EQ(runtime.trace().size(), 1U);
             EXPECT_EQ(
                 runtime.trace()[0].status,
-                AgentTurnStatus::ActionRejected);
+                AgentTurnStatus::StructuralValidationRejected);
             EXPECT_EQ(
                 runtime.trace()[0].validation,
                 AgentActionValidationResult::InvalidPrice);
+            EXPECT_FALSE(
+                runtime.trace()[0].economic_constraint.has_value());
             EXPECT_FALSE(runtime.trace()[0].execution_result.has_value());
             EXPECT_EQ(world.accounts.find_balance(account_a, 10), before);
             EXPECT_TRUE(world.reservations.entries().empty());
             EXPECT_TRUE(world.ledger.entries().empty());
             EXPECT_TRUE(world.events.empty());
             EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
+            const PerAgentExperimentMetrics* metrics =
+                runtime.metrics().find_agent(agent_a);
+            ASSERT_NE(metrics, nullptr);
+            EXPECT_EQ(metrics->structural_rejections, 1U);
+        }
+
+        TEST(AgentRuntimeTest,
+             EconomicConstraintRejectionDoesNotReachExecution) {
+            RuntimeWorld world;
+            create_agent(world, agent_a, account_a);
+            world.accounts.fund(account_a, 10, 1'000);
+            FixedDecisionProvider oversized(
+                SubmitOrderAction{Side::Buy, 100, 3});
+            AgentEconomicProfile profile;
+            profile.max_order_quantity = 2;
+            AgentRuntime runtime(
+                {{agent_a,
+                  &oversized,
+                  std::nullopt,
+                  profile,
+                  AgentPreferenceProfile{0, 100, 5}}},
+                world.observations,
+                world.execution,
+                instrument);
+
+            runtime.run_step();
+
+            ASSERT_EQ(runtime.trace().size(), 1U);
+            const AgentTurnRecord& turn = runtime.trace().front();
+            EXPECT_EQ(
+                turn.status,
+                AgentTurnStatus::EconomicConstraintRejected);
+            EXPECT_EQ(
+                turn.validation,
+                AgentActionValidationResult::Valid);
+            EXPECT_EQ(
+                turn.economic_constraint,
+                AgentEconomicConstraintResult::OrderQuantityExceeded);
+            EXPECT_FALSE(turn.execution_result.has_value());
+            EXPECT_EQ(turn.observation.economic_profile, profile);
+            EXPECT_EQ(turn.utility_before, turn.utility_after);
+            EXPECT_EQ(turn.utility_delta, 0);
+            EXPECT_EQ(
+                world.accounts.find_balance(account_a, 10),
+                (Balance{1'000, 0}));
+            EXPECT_TRUE(world.reservations.entries().empty());
+            EXPECT_TRUE(world.ledger.entries().empty());
+            EXPECT_TRUE(world.events.empty());
+            EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
+            const PerAgentExperimentMetrics* metrics =
+                runtime.metrics().find_agent(agent_a);
+            ASSERT_NE(metrics, nullptr);
+            EXPECT_EQ(metrics->economic_constraint_rejections, 1U);
+        }
+
+        TEST(AgentRuntimeTest,
+             ConstraintAllowedBusinessRejectionRemainsDistinct) {
+            RuntimeWorld world;
+            create_agent(world, agent_a, account_a);
+            FixedDecisionProvider unfunded(
+                SubmitOrderAction{Side::Buy, 100, 1});
+            AgentRuntime runtime(
+                {{agent_a, &unfunded, std::nullopt}},
+                world.observations,
+                world.execution,
+                instrument);
+
+            runtime.run_step();
+
+            ASSERT_EQ(runtime.trace().size(), 1U);
+            const AgentTurnRecord& turn = runtime.trace().front();
+            EXPECT_EQ(turn.status, AgentTurnStatus::ExecutionRejected);
+            EXPECT_EQ(
+                turn.economic_constraint,
+                AgentEconomicConstraintResult::Allowed);
+            ASSERT_TRUE(turn.execution_result.has_value());
+            EXPECT_EQ(
+                std::get<SubmitActionResult>(*turn.execution_result).status,
+                AgentSubmitStatus::InsufficientFunds);
+            EXPECT_TRUE(world.reservations.entries().empty());
+            EXPECT_TRUE(world.ledger.entries().empty());
+            EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
+            const PerAgentExperimentMetrics* metrics =
+                runtime.metrics().find_agent(agent_a);
+            ASSERT_NE(metrics, nullptr);
+            EXPECT_EQ(metrics->execution_rejections, 1U);
+            EXPECT_EQ(metrics->total_accepted_quantity, 0);
         }
 
         TEST(AgentRuntimeTest, ProviderFailureIsRecordedWithoutMutation) {
@@ -204,12 +326,18 @@ namespace exchange {
                 runtime.trace()[0].status,
                 AgentTurnStatus::DecisionFailed);
             EXPECT_FALSE(runtime.trace()[0].action.has_value());
+            EXPECT_FALSE(
+                runtime.trace()[0].economic_constraint.has_value());
             EXPECT_FALSE(runtime.trace()[0].execution_result.has_value());
             EXPECT_EQ(world.accounts.find_balance(account_a, 10), before);
             EXPECT_TRUE(world.reservations.entries().empty());
             EXPECT_TRUE(world.ledger.entries().empty());
             EXPECT_TRUE(world.events.empty());
             EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
+            const PerAgentExperimentMetrics* metrics =
+                runtime.metrics().find_agent(agent_a);
+            ASSERT_NE(metrics, nullptr);
+            EXPECT_EQ(metrics->decision_failures, 1U);
         }
 
         TEST(AgentRuntimeTest, UnexpectedProviderExceptionsStillPropagate) {
@@ -224,6 +352,7 @@ namespace exchange {
 
             EXPECT_THROW(runtime.run_step(), std::logic_error);
             EXPECT_TRUE(runtime.trace().empty());
+            EXPECT_TRUE(runtime.metrics().per_agent().empty());
             EXPECT_TRUE(world.ledger.entries().empty());
             EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
         }
@@ -244,7 +373,11 @@ namespace exchange {
                 1'010,
                 ExternalMarketFreshness::Fresh};
             AgentRuntime runtime(
-                {{agent_a, &provider, std::nullopt}},
+                {{agent_a,
+                  &provider,
+                  std::nullopt,
+                  {},
+                  AgentPreferenceProfile{0, 1, 1}}},
                 world.observations,
                 world.execution,
                 instrument,
@@ -253,8 +386,10 @@ namespace exchange {
             runtime.run_step_at(1'020);
             feed.state.freshness = ExternalMarketFreshness::Stale;
             runtime.run_step_at(7'000);
+            feed.state.freshness = ExternalMarketFreshness::Unavailable;
+            runtime.run_step_at(8'000);
 
-            ASSERT_EQ(provider.observations.size(), 2U);
+            ASSERT_EQ(provider.observations.size(), 3U);
             ASSERT_TRUE(
                 provider.observations[0].world.external_market.has_value());
             EXPECT_EQ(
@@ -262,9 +397,58 @@ namespace exchange {
                 "ALPHA_426USDT");
             EXPECT_FALSE(
                 provider.observations[1].world.external_market.has_value());
+            EXPECT_FALSE(
+                provider.observations[2].world.external_market.has_value());
             EXPECT_EQ(
                 feed.requested_at,
-                (std::vector<std::int64_t>{1'020, 7'000}));
+                (std::vector<std::int64_t>{1'020, 7'000, 8'000}));
+            ASSERT_EQ(runtime.trace().size(), 3U);
+            EXPECT_EQ(runtime.trace()[0].status, AgentTurnStatus::Held);
+            EXPECT_EQ(runtime.trace()[0].local_timestamp_ms, 1'020);
+            ASSERT_TRUE(
+                runtime.trace()[0].external_market_context.has_value());
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context->freshness,
+                ExternalMarketFreshness::Fresh);
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context->symbol,
+                "ALPHA_426USDT");
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context
+                    ->latest_trade_price,
+                (ExternalPrice{4'070'000, 8}));
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context->best_bid,
+                (ExternalPrice{4'060'000, 8}));
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context->best_ask,
+                (ExternalPrice{4'080'000, 8}));
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context
+                    ->event_timestamp_ms,
+                1'000);
+            EXPECT_EQ(
+                runtime.trace()[0].external_market_context
+                    ->local_receive_timestamp_ms,
+                1'010);
+            ASSERT_TRUE(
+                runtime.trace()[1].external_market_context.has_value());
+            EXPECT_EQ(
+                runtime.trace()[1].external_market_context->freshness,
+                ExternalMarketFreshness::Stale);
+            ASSERT_TRUE(
+                runtime.trace()[2].external_market_context.has_value());
+            EXPECT_EQ(
+                runtime.trace()[2].external_market_context->freshness,
+                ExternalMarketFreshness::Unavailable);
+            const PerAgentExperimentMetrics* metrics =
+                runtime.metrics().find_agent(agent_a);
+            ASSERT_NE(metrics, nullptr);
+            EXPECT_EQ(metrics->turns, 3U);
+            EXPECT_EQ(metrics->holds, 3U);
+            EXPECT_EQ(metrics->successful_executions, 0U);
+            EXPECT_EQ(metrics->zero_utility_turns, 3U);
+            EXPECT_EQ(metrics->cumulative_utility_delta, 0);
             EXPECT_TRUE(world.ledger.entries().empty());
             EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
         }

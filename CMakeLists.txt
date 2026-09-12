@@ -6,6 +6,8 @@ option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 option(EXCHANGE_BUILD_DEEPSEEK_PROVIDER "Build the DeepSeek agent provider" ON)
 option(EXCHANGE_BUILD_BINANCE_ALPHA_FEED "Build the Binance Alpha market feed" ON)
+option(EXCHANGE_BUILD_AGENT_LIVE_SMOKE
+    "Build the opt-in live Agent Native smoke application" OFF)
 find_package(Threads REQUIRED)
 
 add_library(exchange_core
@@ -91,11 +93,14 @@ endif()
 add_library(exchange_agent
     src/agent/strategy/rule_based_policy.cpp
     src/agent/domain/action_validation.cpp
+    src/agent/domain/economic_constraints.cpp
     src/agent/domain/external_market.cpp
     src/agent/domain/agent_registry.cpp
+    src/agent/domain/utility.cpp
     src/agent/exchange/trading_request_agent_execution_adapter.cpp
     src/agent/exchange/agent_observation_service.cpp
     src/agent/exchange/agent_objective.cpp
+    src/agent/runtime/agent_experiment.cpp
     src/agent/runtime/agent_runtime.cpp
 )
 add_library(exchange::agent ALIAS exchange_agent)
@@ -159,6 +164,34 @@ if(EXCHANGE_BUILD_DEEPSEEK_PROVIDER)
     else()
         target_compile_options(
             exchange_agent_deepseek PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()
+
+if(EXCHANGE_BUILD_AGENT_LIVE_SMOKE)
+    if(NOT TARGET exchange_agent_deepseek
+        OR NOT TARGET exchange_agent_binance_alpha)
+        message(FATAL_ERROR
+            "The Agent live smoke requires the DeepSeek provider and "
+            "Binance Alpha feed")
+    endif()
+
+    add_executable(exchange_agent_live_smoke
+        apps/exchange_agent_live_smoke/main.cpp
+    )
+    target_link_libraries(exchange_agent_live_smoke
+        PRIVATE
+            exchange::agent
+            exchange::agent_deepseek
+            exchange::agent_binance_alpha
+            Threads::Threads
+    )
+    target_compile_features(exchange_agent_live_smoke PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(
+            exchange_agent_live_smoke PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(
+            exchange_agent_live_smoke PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
@@ -253,6 +286,9 @@ if(EXCHANGE_BUILD_TESTS)
         tests/agent/exchange/durable_agent_execution_test.cpp
         tests/agent/exchange/agent_objective_test.cpp
         tests/agent/domain/action_validation_test.cpp
+        tests/agent/domain/economic_constraints_test.cpp
+        tests/agent/domain/utility_test.cpp
+        tests/agent/runtime/agent_experiment_test.cpp
         tests/agent/runtime/agent_runtime_test.cpp)
     if(TARGET exchange_agent_binance_alpha)
         list(APPEND EXCHANGE_TEST_SOURCES

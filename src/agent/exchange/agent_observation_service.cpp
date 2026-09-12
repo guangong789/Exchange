@@ -51,6 +51,8 @@ namespace exchange {
                 instrument_.quote_asset),
             {},
             std::nullopt,
+            {},
+            std::nullopt,
         };
 
         for (const auto& [order_id, reservation] :

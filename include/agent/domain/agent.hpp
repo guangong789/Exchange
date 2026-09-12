@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "accounting/account.hpp"
+#include "agent/domain/economic_profile.hpp"
+#include "agent/domain/preference_profile.hpp"
 #include "agent/domain/world_state.hpp"
 #include "core/types.hpp"
 
@@ -54,6 +56,8 @@ namespace exchange {
         std::optional<Balance> quote_balance;
         std::vector<ObservedOrder> active_orders;
         std::optional<ObjectiveProgress> objective;
+        AgentEconomicProfile economic_profile;
+        std::optional<AgentPreferenceProfile> preference_profile;
 
         bool operator==(const AgentObservation&) const = default;
     };

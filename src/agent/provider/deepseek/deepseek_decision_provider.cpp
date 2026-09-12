@@ -112,7 +112,9 @@ namespace exchange {
             "with no Markdown or prose. "
             "External market data is reference environment context only. "
             "You are not trading on Binance; every legal action targets the "
-            "internal exchange. Legal schemas are: "
+            "internal exchange. Economic limits in the observation are hard "
+            "proposal constraints enforced by the deterministic runtime. "
+            "Legal schemas are: "
             "{\"action\":\"submit_order\",\"side\":\"buy|sell\","
             "\"price\":positive_integer,\"quantity\":positive_integer}, "
             "{\"action\":\"cancel_order\",\"order_id\":positive_integer}, "
@@ -169,6 +171,43 @@ namespace exchange {
                  << format_external_price(*external.best_ask)
                  << ", event_timestamp_ms="
                  << external.event_timestamp_ms << '\n';
+        }
+        const AgentEconomicProfile& profile =
+            observation.economic_profile;
+        user << "Economic hard limits: max_order_quantity="
+             << profile.max_order_quantity
+             << ", max_order_notional_quote_atomic="
+             << profile.max_order_notional
+             << ", max_base_position_atomic="
+             << profile.max_base_position
+             << ", max_buy_price=";
+        if (profile.max_buy_price.has_value()) {
+            user << *profile.max_buy_price;
+        } else {
+            user << "null";
+        }
+        user << ", min_sell_price=";
+        if (profile.min_sell_price.has_value()) {
+            user << *profile.min_sell_price;
+        } else {
+            user << "null";
+        }
+        user << '\n';
+        user << "Utility preference: ";
+        if (!observation.preference_profile.has_value()) {
+            user << "null\n";
+        } else {
+            const AgentPreferenceProfile& preference =
+                *observation.preference_profile;
+            user << "quote_unit_value=1"
+                 << ", target_base_inventory="
+                 << preference.target_base_inventory
+                 << ", base_unit_value="
+                 << preference.base_unit_value
+                 << ", inventory_deviation_penalty_per_unit="
+                 << preference.inventory_deviation_penalty_per_unit
+                 << ". Runtime evaluates utility before and after the "
+                    "action; utility does not change action admissibility.\n";
         }
         user << "Objective: ";
         if (!observation.objective.has_value()) {
