@@ -6,17 +6,17 @@
 #include "matching/event_collector.hpp"
 
 namespace exchange {
-    class ExecutionCommandApplier {
+    class TradingCommandApplier {
     public:
-        ExecutionCommandApplier(
+        TradingCommandApplier(
             ExecutionCoordinator& execution_coordinator,
             EventCollector& events) noexcept;
 
-        ExecutionCommandApplier(const ExecutionCommandApplier&) = delete;
-        ExecutionCommandApplier& operator=(
-            const ExecutionCommandApplier&) = delete;
-        ExecutionCommandApplier(ExecutionCommandApplier&&) = delete;
-        ExecutionCommandApplier& operator=(ExecutionCommandApplier&&) = delete;
+        TradingCommandApplier(const TradingCommandApplier&) = delete;
+        TradingCommandApplier& operator=(
+            const TradingCommandApplier&) = delete;
+        TradingCommandApplier(TradingCommandApplier&&) = delete;
+        TradingCommandApplier& operator=(TradingCommandApplier&&) = delete;
 
         // An unexpected exception means application may have partially
         // mutated memory. Callers must treat the runtime as unsafe to reuse.

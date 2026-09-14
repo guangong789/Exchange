@@ -124,35 +124,26 @@ namespace exchange {
         AccountId to_account_id,
         AssetId asset_id,
         Amount amount) {
-        validate_balance_mutation(from_account_id, asset_id, amount);
-        validate_balance_mutation(to_account_id, asset_id, amount);
-        if (from_account_id == to_account_id) {
-            throw std::invalid_argument(
-                "available transfer accounts must be distinct");
+        switch (validate_available_transfer(
+                    from_account_id,
+                    to_account_id,
+                    asset_id,
+                    amount)) {
+            case AvailableTransferValidationResult::Ready:
+                break;
+            case AvailableTransferValidationResult::InsufficientFunds:
+                return AvailableTransferResult::InsufficientFunds;
+            case AvailableTransferValidationResult::AccountNotFound:
+                throw std::out_of_range("transfer account does not exist");
+            case AvailableTransferValidationResult::DestinationOverflow:
+                throw std::overflow_error(
+                    "destination available balance overflow");
         }
 
-        const auto from_account = accounts_.find(from_account_id);
-        if (from_account == accounts_.end()) {
-            throw std::out_of_range("source account does not exist");
-        }
-        const auto to_account = accounts_.find(to_account_id);
-        if (to_account == accounts_.end()) {
-            throw std::out_of_range("destination account does not exist");
-        }
-
-        const auto from_balance = from_account->second.find(asset_id);
-        if (from_balance == from_account->second.end()
-            || from_balance->second.available < amount) {
-            return AvailableTransferResult::InsufficientFunds;
-        }
-
+        auto from_account = accounts_.find(from_account_id);
+        auto to_account = accounts_.find(to_account_id);
+        auto from_balance = from_account->second.find(asset_id);
         auto to_balance = to_account->second.find(asset_id);
-        if (to_balance != to_account->second.end()
-            && to_balance->second.available
-                   > std::numeric_limits<Amount>::max() - amount) {
-            throw std::overflow_error(
-                "destination available balance overflow");
-        }
 
         if (to_balance == to_account->second.end()) {
             to_balance = to_account->second
@@ -163,6 +154,41 @@ namespace exchange {
         from_balance->second.available -= amount;
         to_balance->second.available += amount;
         return AvailableTransferResult::Success;
+    }
+
+    AvailableTransferValidationResult
+    AccountStore::validate_available_transfer(
+        AccountId from_account_id,
+        AccountId to_account_id,
+        AssetId asset_id,
+        Amount amount) const {
+        validate_balance_mutation(from_account_id, asset_id, amount);
+        validate_balance_mutation(to_account_id, asset_id, amount);
+        if (from_account_id == to_account_id) {
+            throw std::invalid_argument(
+                "available transfer accounts must be distinct");
+        }
+
+        const auto from_account = accounts_.find(from_account_id);
+        const auto to_account = accounts_.find(to_account_id);
+        if (from_account == accounts_.end()
+            || to_account == accounts_.end()) {
+            return AvailableTransferValidationResult::AccountNotFound;
+        }
+
+        const auto from_balance = from_account->second.find(asset_id);
+        if (from_balance == from_account->second.end()
+            || from_balance->second.available < amount) {
+            return AvailableTransferValidationResult::InsufficientFunds;
+        }
+
+        const auto to_balance = to_account->second.find(asset_id);
+        if (to_balance != to_account->second.end()
+            && to_balance->second.available
+                   > std::numeric_limits<Amount>::max() - amount) {
+            return AvailableTransferValidationResult::DestinationOverflow;
+        }
+        return AvailableTransferValidationResult::Ready;
     }
 
     ReserveResult AccountStore::reserve(

@@ -127,11 +127,13 @@ namespace exchange {
             ASSERT_TRUE(registry.register_agent({agent_b, account_b}));
             accounts.fund(account_a, 20, 2);
             accounts.fund(account_b, 10, 900);
+            ContractStore contracts;
             const AgentObservationService observations(
                 registry,
                 accounts,
                 reservations,
                 matching_engine.order_book(),
+                contracts,
                 test_instrument);
 
             const WorldState world = observations.capture_world(1);

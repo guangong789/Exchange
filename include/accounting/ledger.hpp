@@ -8,6 +8,7 @@
 
 #include "accounting/account.hpp"
 #include "accounting/financial_conversion.hpp"
+#include "agent/domain/contract.hpp"
 #include "matching/trade.hpp"
 
 namespace exchange {
@@ -52,11 +53,21 @@ namespace exchange {
         bool operator==(const FundingLedgerMetadata&) const = default;
     };
 
+    struct ContractSettlementLedgerMetadata {
+        ContractId contract_id{};
+        AccountId payer_account_id{};
+        AccountId payee_account_id{};
+
+        bool operator==(
+            const ContractSettlementLedgerMetadata&) const = default;
+    };
+
     using LedgerMetadata = std::variant<
         ReserveLedgerMetadata,
         ReleaseLedgerMetadata,
         TradeLedgerMetadata,
-        FundingLedgerMetadata>;
+        FundingLedgerMetadata,
+        ContractSettlementLedgerMetadata>;
 
     struct LedgerTransaction {
         LedgerMetadata metadata;
@@ -95,6 +106,14 @@ namespace exchange {
         AccountId destination_account_id,
         AssetId asset_id,
         Amount amount);
+
+    [[nodiscard]] LedgerTransaction
+    make_contract_settlement_ledger_transaction(
+        ContractId contract_id,
+        AccountId payer_account_id,
+        AccountId payee_account_id,
+        AssetId quote_asset_id,
+        Amount quote_amount);
 
     class Ledger {
     public:

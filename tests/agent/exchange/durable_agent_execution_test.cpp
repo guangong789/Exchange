@@ -72,8 +72,6 @@ namespace exchange {
              AgentSubmitUsesDurableExecutorAndRecoversState) {
             TemporaryDirectory directory;
             const std::string wal_path = directory.wal_path();
-            AgentRegistry registry;
-            ASSERT_TRUE(registry.register_agent({agent_id, account_id}));
 
             {
                 std::unique_ptr<TradingRuntime> runtime =
@@ -81,9 +79,12 @@ namespace exchange {
                         instrument,
                         wal_path,
                         funded_bootstrap());
+                ASSERT_TRUE(runtime->agent_registry().register_agent(
+                    {agent_id, account_id}));
                 TradingRequestAgentExecutionAdapter adapter{
-                    registry,
-                    runtime->executor()};
+                    runtime->agent_registry(),
+                    runtime->executor(),
+                    runtime->contract_executor()};
 
                 const AgentActionResult result = adapter.execute(
                     agent_id,
@@ -122,8 +123,6 @@ namespace exchange {
              EconomicRejectionWritesNoWalAndConsumesNoExecutionIdentity) {
             TemporaryDirectory directory;
             const std::string wal_path = directory.wal_path();
-            AgentRegistry registry;
-            ASSERT_TRUE(registry.register_agent({agent_id, account_id}));
             MutableDecisionProvider provider{
                 SubmitOrderAction{Side::Buy, 101, 1}};
             AgentEconomicProfile profile;
@@ -135,16 +134,20 @@ namespace exchange {
                         instrument,
                         wal_path,
                         funded_bootstrap());
+                ASSERT_TRUE(runtime->agent_registry().register_agent(
+                    {agent_id, account_id}));
                 const TradingRuntime& runtime_view = *runtime;
                 AgentObservationService observations{
-                    registry,
+                    runtime->agent_registry(),
                     runtime_view.accounts(),
                     runtime->reservations(),
                     runtime->order_book(),
+                    runtime->contracts(),
                     instrument};
                 TradingRequestAgentExecutionAdapter adapter{
-                    registry,
-                    runtime->executor()};
+                    runtime->agent_registry(),
+                    runtime->executor(),
+                    runtime->contract_executor()};
                 AgentRuntime agent_runtime(
                     {{agent_id,
                       &provider,
@@ -231,24 +234,26 @@ namespace exchange {
              HoldRecordingDoesNotWriteWalOrMutateExchangeState) {
             TemporaryDirectory directory;
             const std::string wal_path = directory.wal_path();
-            AgentRegistry registry;
-            ASSERT_TRUE(registry.register_agent({agent_id, account_id}));
             MutableDecisionProvider provider{HoldAction{}};
             std::unique_ptr<TradingRuntime> runtime =
                 TradingRuntime::create_durable(
                     instrument,
                     wal_path,
                     funded_bootstrap());
+            ASSERT_TRUE(runtime->agent_registry().register_agent(
+                {agent_id, account_id}));
             const TradingRuntime& runtime_view = *runtime;
             AgentObservationService observations{
-                registry,
+                runtime->agent_registry(),
                 runtime_view.accounts(),
                 runtime->reservations(),
                 runtime->order_book(),
+                runtime->contracts(),
                 instrument};
             TradingRequestAgentExecutionAdapter adapter{
-                registry,
-                runtime->executor()};
+                runtime->agent_registry(),
+                runtime->executor(),
+                runtime->contract_executor()};
             AgentRuntime agent_runtime(
                 {{agent_id,
                   &provider,

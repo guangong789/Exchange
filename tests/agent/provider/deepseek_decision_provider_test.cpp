@@ -53,6 +53,24 @@ namespace exchange {
             observation.economic_profile.min_sell_price = 80;
             observation.preference_profile =
                 AgentPreferenceProfile{5, 120, 10};
+            observation.contracts.push_back(Contract{
+                7,
+                202,
+                101,
+                ContractTerms{
+                    101,
+                    202,
+                    500,
+                    ResourceKind::ComputeCredit,
+                    10},
+                PaymentObligation{101, 202, 500, false},
+                ResourceDeliveryObligation{
+                    202,
+                    101,
+                    ResourceKind::ComputeCredit,
+                    10,
+                    false},
+                ContractState::Proposed});
             return observation;
         }
 
@@ -99,9 +117,63 @@ namespace exchange {
                       std::string::npos);
             EXPECT_NE(captured.user.find("base_unit_value=120"),
                       std::string::npos);
+            EXPECT_NE(captured.system.find("propose_contract"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("accept_contract"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("reject_contract"),
+                      std::string::npos);
+            EXPECT_NE(
+                captured.system.find("fulfill_resource_obligation"),
+                std::string::npos);
+            EXPECT_NE(
+                captured.system.find("\"action\":\"settle"),
+                std::string::npos);
+            EXPECT_NE(captured.system.find("Only an Accepted contract"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("resource-delivery debtor"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("synthetic internal resource"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("Only a Fulfilled contract"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("payment debtor"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("reserved quote is not spendable"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("Insufficient available quote"),
+                      std::string::npos);
+            EXPECT_NE(captured.system.find("blockchain, wallet, or x402"),
+                      std::string::npos);
+            EXPECT_NE(captured.user.find("Relevant contracts:"),
+                      std::string::npos);
+            EXPECT_NE(captured.user.find("id=7"), std::string::npos);
+            EXPECT_NE(captured.user.find("state=proposed"),
+                      std::string::npos);
+            EXPECT_NE(captured.user.find("payment_amount=500"),
+                      std::string::npos);
+            EXPECT_NE(captured.user.find("resource=compute_credit"),
+                      std::string::npos);
+            EXPECT_NE(captured.user.find("resource_debtor=202"),
+                      std::string::npos);
             EXPECT_NE(
                 captured.user.find(
                     "inventory_deviation_penalty_per_unit=10"),
+                std::string::npos);
+        }
+
+        TEST(DeepSeekDecisionProviderTest,
+             DescribesMissingExternalMarketAsUnavailable) {
+            AgentObservation observation = sample_observation();
+            observation.world.external_market.reset();
+
+            const DeepSeekPrompt prompt = build_deepseek_prompt(observation);
+
+            EXPECT_NE(
+                prompt.user.find("External market: unavailable\n"),
+                std::string::npos);
+            EXPECT_EQ(
+                prompt.user.find("source=Binance Alpha"),
                 std::string::npos);
         }
 
@@ -125,6 +197,7 @@ namespace exchange {
             EventCollector events;
             MatchingEngine matching_engine{events};
             AgentRegistry registry;
+            ContractStore contracts;
             ASSERT_TRUE(accounts.create_account(7));
             ASSERT_TRUE(registry.register_agent({101, 7}));
             const AgentObservationService observations{
@@ -132,6 +205,7 @@ namespace exchange {
                 accounts,
                 reservations,
                 matching_engine.order_book(),
+                contracts,
                 instrument};
             CountingExecutionAdapter execution;
             DeepSeekDecisionProvider deepseek([](const DeepSeekPrompt&) {
@@ -195,15 +269,29 @@ namespace exchange {
 
             AgentRegistry registry;
             ASSERT_TRUE(registry.register_agent({101, 7}));
+            ContractStore contracts;
+            ContractSequencer contract_sequencer;
+            ContractCommandApplier contract_applier{
+                contracts,
+                accounts,
+                ledger,
+                instrument.quote_asset};
+            ContractRequestExecutor contract_executor{
+                registry,
+                contracts,
+                contract_sequencer,
+                contract_applier};
             const AgentObservationService observations{
                 registry,
                 accounts,
                 reservations,
                 matching_engine.order_book(),
+                contracts,
                 instrument};
             TradingRequestAgentExecutionAdapter execution{
                 registry,
                 request_executor,
+                contract_executor,
                 2};
             DeepSeekDecisionProvider deepseek([](const DeepSeekPrompt&) {
                 return std::string(
@@ -256,6 +344,32 @@ namespace exchange {
                 AgentAction{CancelOrderAction{12}});
         }
 
+        TEST(DeepSeekActionParsingTest, ParsesContractActions) {
+            EXPECT_EQ(
+                parse_deepseek_action(
+                    R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":500,"resource":"compute_credit","resource_quantity":10})"),
+                (AgentAction{ProposeContractAction{
+                    202,
+                    ContractTerms{
+                        101,
+                        202,
+                        500,
+                        ResourceKind::ComputeCredit,
+                        10}}}));
+            EXPECT_EQ(
+                parse_deepseek_action(
+                    R"({"action":"accept_contract","contract_id":7})"),
+                AgentAction{AcceptContractAction{7}});
+            EXPECT_EQ(
+                parse_deepseek_action(
+                    R"({"action":"reject_contract","contract_id":7})"),
+                AgentAction{RejectContractAction{7}});
+            EXPECT_EQ(
+                parse_deepseek_action(
+                    R"({"action":"fulfill_resource_obligation","contract_id":7})"),
+                AgentAction{FulfillResourceObligationAction{7}});
+        }
+
         TEST(DeepSeekActionParsingTest, RejectsMalformedJsonAndUnknownAction) {
             EXPECT_THROW(
                 static_cast<void>(parse_deepseek_action("not json")),
@@ -303,6 +417,48 @@ namespace exchange {
             EXPECT_THROW(
                 static_cast<void>(parse_deepseek_action(out_of_range)),
                 DeepSeekDecisionError);
+        }
+
+        TEST(DeepSeekActionParsingTest,
+             RejectsMalformedContractActions) {
+            for (const std::string& response : {
+                     R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":500,"resource":"compute_credit"})",
+                     R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":500,"resource":"compute_credit","resource_quantity":10,"message":"accept this"})",
+                     R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":500,"resource":"gpu","resource_quantity":10})",
+                     R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":0,"resource":"compute_credit","resource_quantity":10})",
+                     R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":500,"resource":"compute_credit","resource_quantity":0})",
+                     R"({"action":"propose_contract","counterparty":"202","payer":101,"payee":202,"payment_amount":500,"resource":"compute_credit","resource_quantity":10})",
+                     R"({"action":"propose_contract","counterparty":202,"payer":101,"payee":202,"payment_amount":9223372036854775808,"resource":"compute_credit","resource_quantity":10})",
+                     R"({"action":"accept_contract","contract_id":0})",
+                     R"({"action":"accept_contract","contract_id":"7"})",
+                     R"({"action":"accept_contract","contract_id":18446744073709551615})",
+                     R"({"action":"reject_contract","contract_id":-1})",
+                     R"({"action":"fulfill_resource_obligation"})",
+                     R"({"action":"fulfill_resource_obligation","contract_id":0})",
+                     R"({"action":"fulfill_resource_obligation","contract_id":"7"})",
+                     R"({"action":"fulfill_resource_obligation","contract_id":7,"actor":202})",
+                     R"({"action":"settle_payment_obligation"})",
+                     R"({"action":"settle_payment_obligation","contract_id":0})",
+                     R"({"action":"settle_payment_obligation","contract_id":"7"})",
+                     R"({"action":"settle_payment_obligation","contract_id":7,"actor":101})",
+                     R"({"action":"settle_payment_obligation","contract_id":7,"payment_amount":500})",
+                     R"({"action":"accept_contract","contract_id":7,"agent_id":101})"}) {
+                EXPECT_THROW(
+                    static_cast<void>(parse_deepseek_action(response)),
+                    DeepSeekDecisionError);
+            }
+        }
+
+        TEST(DeepSeekActionParsingTest,
+             ParsesSettlementWithoutModelSuppliedActorOrAmount) {
+            const AgentAction action = parse_deepseek_action(
+                R"({"action":"settle_payment_obligation","contract_id":7})");
+            ASSERT_TRUE(std::holds_alternative<
+                        SettlePaymentObligationAction>(action));
+            EXPECT_EQ(
+                std::get<SettlePaymentObligationAction>(action)
+                    .contract_id,
+                7U);
         }
 
         TEST(DeepSeekDecisionProviderTest, RejectsMissingCompletionFunction) {

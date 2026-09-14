@@ -67,11 +67,66 @@ namespace exchange {
             return number;
         }
 
+        std::uint64_t required_positive_uint64(
+            const Json& value,
+            const char* key) {
+            const auto field = value.find(key);
+            if (field == value.end()
+                || (!field->is_number_integer()
+                    && !field->is_number_unsigned())) {
+                throw DeepSeekDecisionError(
+                    "DeepSeek action requires an integer field");
+            }
+            if (field->is_number_unsigned()) {
+                const std::uint64_t number = field->get<std::uint64_t>();
+                if (number == 0) {
+                    throw DeepSeekDecisionError(
+                        "DeepSeek action integer must be positive");
+                }
+                return number;
+            }
+            const std::int64_t number = field->get<std::int64_t>();
+            if (number <= 0) {
+                throw DeepSeekDecisionError(
+                    "DeepSeek action integer must be positive");
+            }
+            return static_cast<std::uint64_t>(number);
+        }
+
         OrderId required_order_id(const Json& value) {
             const std::int64_t order_id = required_positive_int64(
                 value,
                 "order_id");
             return static_cast<OrderId>(order_id);
+        }
+
+        ContractId required_contract_id(const Json& value) {
+            const ContractId contract_id = required_positive_uint64(
+                value,
+                "contract_id");
+            if (contract_id == std::numeric_limits<ContractId>::max()) {
+                throw DeepSeekDecisionError(
+                    "DeepSeek contract ID is out of range");
+            }
+            return contract_id;
+        }
+
+        std::string_view contract_state_name(ContractState state) {
+            switch (state) {
+                case ContractState::Proposed: return "proposed";
+                case ContractState::Accepted: return "accepted";
+                case ContractState::Rejected: return "rejected";
+                case ContractState::Fulfilled: return "fulfilled";
+                case ContractState::Settled: return "settled";
+            }
+            throw std::logic_error("Unknown contract state");
+        }
+
+        std::string_view resource_name(ResourceKind resource) {
+            switch (resource) {
+                case ResourceKind::ComputeCredit: return "compute_credit";
+            }
+            throw std::logic_error("Unknown contract resource");
         }
 
         void append_balance(
@@ -113,11 +168,38 @@ namespace exchange {
             "External market data is reference environment context only. "
             "You are not trading on Binance; every legal action targets the "
             "internal exchange. Economic limits in the observation are hard "
-            "proposal constraints enforced by the deterministic runtime. "
+            "trading-action constraints enforced by the deterministic runtime. "
+            "Contracts are internal Agent Native economic agreements. "
+            "ComputeCredit is a synthetic internal resource. Proposing, "
+            "accepting, or fulfilling a contract does not transfer money. "
+            "Only an Accepted contract can be fulfilled, and only by the "
+            "resource-delivery debtor. Fulfillment declares the complete "
+            "agreed ComputeCredit quantity delivered; it does not pay the "
+            "contract. Only a Fulfilled contract can be settled, and only "
+            "by its payment debtor. Settlement transfers the complete "
+            "internal quote payment from available balance to the payee; "
+            "reserved quote is not spendable. Insufficient available quote "
+            "rejects settlement. Settlement completes the contract without "
+            "any blockchain, wallet, or x402 payment. The runtime remains "
+            "authoritative. "
             "Legal schemas are: "
             "{\"action\":\"submit_order\",\"side\":\"buy|sell\","
             "\"price\":positive_integer,\"quantity\":positive_integer}, "
             "{\"action\":\"cancel_order\",\"order_id\":positive_integer}, "
+            "{\"action\":\"propose_contract\","
+            "\"counterparty\":positive_integer,"
+            "\"payer\":positive_integer,\"payee\":positive_integer,"
+            "\"payment_amount\":positive_integer,"
+            "\"resource\":\"compute_credit\","
+            "\"resource_quantity\":positive_integer}, "
+            "{\"action\":\"accept_contract\","
+            "\"contract_id\":positive_integer}, "
+            "{\"action\":\"reject_contract\","
+            "\"contract_id\":positive_integer}, "
+            "{\"action\":\"fulfill_resource_obligation\","
+            "\"contract_id\":positive_integer}, "
+            "{\"action\":\"settle_payment_obligation\","
+            "\"contract_id\":positive_integer}, "
             "or {\"action\":\"hold\"}. Include exactly the fields in the "
             "selected schema.";
 
@@ -149,6 +231,39 @@ namespace exchange {
                      << order.remaining_quantity << '\n';
             }
         }
+        user << "Relevant contracts:";
+        if (observation.contracts.empty()) {
+            user << " none\n";
+        } else {
+            user << '\n';
+            for (const Contract& contract : observation.contracts) {
+                user << "- id=" << contract.id
+                     << ", proposer=" << contract.proposer
+                     << ", counterparty=" << contract.counterparty
+                     << ", state=" << contract_state_name(contract.state)
+                     << ", payer=" << contract.terms.payer
+                     << ", payee=" << contract.terms.payee
+                     << ", payment_amount="
+                     << contract.terms.quote_payment_amount
+                     << ", resource="
+                     << resource_name(contract.terms.resource)
+                     << ", resource_quantity="
+                     << contract.terms.resource_quantity
+                     << ", resource_debtor="
+                     << contract.resource_delivery_obligation.debtor
+                     << ", resource_creditor="
+                     << contract.resource_delivery_obligation.creditor
+                     << ", payment_fulfilled="
+                     << (contract.payment_obligation.fulfilled
+                             ? "true"
+                             : "false")
+                     << ", resource_fulfilled="
+                     << (contract.resource_delivery_obligation.fulfilled
+                             ? "true"
+                             : "false")
+                     << '\n';
+            }
+        }
         user << "External market: ";
         if (!observation.world.external_market.has_value()
             || observation.world.external_market->freshness
@@ -157,7 +272,7 @@ namespace exchange {
                     .has_value()
             || !observation.world.external_market->best_bid.has_value()
             || !observation.world.external_market->best_ask.has_value()) {
-            user << "null\n";
+            user << "unavailable\n";
         } else {
             const ExternalMarketState& external =
                 *observation.world.external_market;
@@ -261,6 +376,52 @@ namespace exchange {
                     required_positive_int64(value, "price"),
                     required_positive_int64(value, "quantity"),
                 };
+            }
+            if (action == "propose_contract") {
+                require_exact_fields(
+                    value,
+                    {"action",
+                     "counterparty",
+                     "payee",
+                     "payer",
+                     "payment_amount",
+                     "resource",
+                     "resource_quantity"});
+                const std::string resource = required_string(
+                    value,
+                    "resource");
+                if (resource != "compute_credit") {
+                    throw DeepSeekDecisionError(
+                        "DeepSeek action has an invalid resource");
+                }
+                return ProposeContractAction{
+                    required_positive_uint64(value, "counterparty"),
+                    ContractTerms{
+                        required_positive_uint64(value, "payer"),
+                        required_positive_uint64(value, "payee"),
+                        required_positive_int64(value, "payment_amount"),
+                        ResourceKind::ComputeCredit,
+                        required_positive_int64(
+                            value,
+                            "resource_quantity")}};
+            }
+            if (action == "accept_contract") {
+                require_exact_fields(value, {"action", "contract_id"});
+                return AcceptContractAction{required_contract_id(value)};
+            }
+            if (action == "reject_contract") {
+                require_exact_fields(value, {"action", "contract_id"});
+                return RejectContractAction{required_contract_id(value)};
+            }
+            if (action == "fulfill_resource_obligation") {
+                require_exact_fields(value, {"action", "contract_id"});
+                return FulfillResourceObligationAction{
+                    required_contract_id(value)};
+            }
+            if (action == "settle_payment_obligation") {
+                require_exact_fields(value, {"action", "contract_id"});
+                return SettlePaymentObligationAction{
+                    required_contract_id(value)};
             }
             throw DeepSeekDecisionError(
                 "DeepSeek action has an unknown action");

@@ -1,4 +1,4 @@
-#include "execution/execution_command_applier.hpp"
+#include "execution/trading_command_applier.hpp"
 
 #include <optional>
 #include <stdexcept>
@@ -40,13 +40,13 @@ namespace exchange {
         }
     }  // namespace
 
-    ExecutionCommandApplier::ExecutionCommandApplier(
+    TradingCommandApplier::TradingCommandApplier(
         ExecutionCoordinator& execution_coordinator,
         EventCollector& events) noexcept
         : execution_coordinator_(execution_coordinator),
           events_(events) {}
 
-    TradingResponse ExecutionCommandApplier::apply(
+    TradingResponse TradingCommandApplier::apply(
         const ExecutionCommand& command) {
         events_.clear();
         return std::visit(
@@ -68,7 +68,9 @@ namespace exchange {
                         result == TradingResult::Accepted
                             ? std::optional<OrderId>{payload.order.id}
                             : std::nullopt};
-                } else {
+                } else if constexpr (std::is_same_v<
+                                         Command,
+                                         CancelExecutionCommand>) {
                     return TradingResponse{
                         payload.request_id,
                         map_cancel_result(
@@ -77,6 +79,9 @@ namespace exchange {
                                 payload.order_id)),
                         events_.events(),
                         std::nullopt};
+                } else {
+                    throw std::logic_error(
+                        "contract command passed to trading applier");
                 }
             },
             command);

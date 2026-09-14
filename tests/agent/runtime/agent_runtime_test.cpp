@@ -92,15 +92,29 @@ namespace exchange {
                 events,
                 sequencer};
             AgentRegistry registry;
+            ContractStore contracts;
+            ContractSequencer contract_sequencer;
+            ContractCommandApplier contract_applier{
+                contracts,
+                accounts,
+                ledger,
+                instrument.quote_asset};
+            ContractRequestExecutor contract_executor{
+                registry,
+                contracts,
+                contract_sequencer,
+                contract_applier};
             AgentObservationService observations{
                 registry,
                 accounts,
                 reservations,
                 matching_engine.order_book(),
+                contracts,
                 instrument};
             TradingRequestAgentExecutionAdapter execution{
                 registry,
-                request_executor};
+                request_executor,
+                contract_executor};
         };
 
         void create_agent(

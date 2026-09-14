@@ -12,6 +12,12 @@ namespace exchange {
         InvalidOrderId,
         CancelTargetNotActive,
         InvalidFinancialValue,
+        InvalidContractCounterparty,
+        InvalidContractParties,
+        InvalidContractPayment,
+        InvalidContractResource,
+        InvalidContractQuantity,
+        InvalidContractId,
     };
 
     [[nodiscard]] AgentActionValidationResult validate_agent_action(

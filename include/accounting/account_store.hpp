@@ -16,6 +16,13 @@ namespace exchange {
         InsufficientFunds,
     };
 
+    enum class AvailableTransferValidationResult {
+        Ready,
+        AccountNotFound,
+        InsufficientFunds,
+        DestinationOverflow,
+    };
+
     class AccountStore {
     public:
         using AssetBalances = std::map<AssetId, Balance>;
@@ -48,6 +55,13 @@ namespace exchange {
             AccountId to_account_id,
             AssetId asset_id,
             Amount amount);
+
+        [[nodiscard]] AvailableTransferValidationResult
+        validate_available_transfer(
+            AccountId from_account_id,
+            AccountId to_account_id,
+            AssetId asset_id,
+            Amount amount) const;
 
         [[nodiscard]] ReserveResult reserve(
             AccountId account_id,

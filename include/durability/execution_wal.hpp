@@ -17,6 +17,9 @@ namespace exchange {
     inline constexpr std::size_t kWalFileHeaderEncodedSize = 76;
     inline constexpr std::size_t kWalSubmitRecordEncodedSize = 69;
     inline constexpr std::size_t kWalCancelRecordEncodedSize = 44;
+    inline constexpr std::size_t kWalCreateContractRecordEncodedSize = 77;
+    inline constexpr std::size_t kWalContractTransitionRecordEncodedSize = 36;
+    inline constexpr std::size_t kWalSettlePaymentRecordEncodedSize = 52;
     inline constexpr std::size_t kMaxWalRecordEncodedSize = 4096;
 
     struct WalFileHeader {

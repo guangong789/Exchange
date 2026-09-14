@@ -2,7 +2,8 @@
 
 #include "accounting/financial_conversion.hpp"
 #include "durability/command_journal.hpp"
-#include "execution/execution_command_applier.hpp"
+#include "execution/trading_command_applier.hpp"
+#include "execution/execution_runtime_status.hpp"
 #include "execution/execution_sequencer.hpp"
 #include "execution/trading_request.hpp"
 
@@ -16,7 +17,8 @@ namespace exchange {
             ExecutionCoordinator& execution_coordinator,
             EventCollector& events,
             ExecutionSequencer& sequencer,
-            ExecutionCommandJournal* command_journal = nullptr) noexcept;
+            ExecutionCommandJournal* command_journal = nullptr,
+            ExecutionRuntimeStatus* runtime_status = nullptr) noexcept;
 
         TradingRequestExecutor(const TradingRequestExecutor&) = delete;
         TradingRequestExecutor& operator=(const TradingRequestExecutor&) = delete;
@@ -36,10 +38,11 @@ namespace exchange {
             ExecutionCommandJournal& command_journal) noexcept;
 
         const InstrumentContext instrument_;
-        ExecutionCommandApplier command_applier_;
+        TradingCommandApplier command_applier_;
         EventCollector& events_;
         ExecutionSequencer& sequencer_;
         ExecutionCommandJournal* command_journal_{};
+        ExecutionRuntimeStatus* runtime_status_{};
         bool poisoned_{};
         bool durable_processing_started_{};
     };

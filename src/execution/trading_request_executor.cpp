@@ -12,20 +12,25 @@ namespace exchange {
         ExecutionCoordinator& execution_coordinator,
         EventCollector& events,
         ExecutionSequencer& sequencer,
-        ExecutionCommandJournal* command_journal) noexcept
+        ExecutionCommandJournal* command_journal,
+        ExecutionRuntimeStatus* runtime_status) noexcept
         : instrument_(instrument),
           command_applier_(execution_coordinator, events),
           events_(events),
           sequencer_(sequencer),
-          command_journal_(command_journal) {}
+          command_journal_(command_journal),
+          runtime_status_(runtime_status) {}
 
     TradingResponse TradingRequestExecutor::execute(
         const TradingRequest& request) {
-        if (poisoned_) {
+        if (poisoned()) {
             throw std::logic_error("trading request executor is poisoned");
         }
         if (command_journal_ != nullptr) {
             durable_processing_started_ = true;
+            if (runtime_status_ != nullptr) {
+                runtime_status_->durable_processing_started = true;
+            }
         }
         events_.clear();
         ExecutionAdmissionResult admission = admit_trading_request(
@@ -50,16 +55,22 @@ namespace exchange {
             return command_applier_.apply(command);
         } catch (...) {
             poisoned_ = true;
+            if (runtime_status_ != nullptr) {
+                runtime_status_->poisoned = true;
+            }
             throw;
         }
     }
 
     bool TradingRequestExecutor::poisoned() const noexcept {
-        return poisoned_;
+        return poisoned_
+            || (runtime_status_ != nullptr && runtime_status_->poisoned);
     }
 
     bool TradingRequestExecutor::durable_processing_started() const noexcept {
-        return durable_processing_started_;
+        return durable_processing_started_
+            || (runtime_status_ != nullptr
+                && runtime_status_->durable_processing_started);
     }
 
     void TradingRequestExecutor::attach_command_journal(

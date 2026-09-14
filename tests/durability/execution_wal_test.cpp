@@ -1,7 +1,7 @@
 #include "durability/execution_wal.hpp"
 
 #include "accounting/execution_coordinator.hpp"
-#include "execution/execution_command_applier.hpp"
+#include "execution/trading_command_applier.hpp"
 #include "execution/execution_sequencer.hpp"
 
 #include <algorithm>
@@ -117,7 +117,7 @@ namespace exchange {
             const WalBytes bytes = encoded_header();
 
             EXPECT_EQ(bytes.size(), kWalFileHeaderEncodedSize);
-            EXPECT_EQ(bytes[8], 2U);
+            EXPECT_EQ(bytes[8], 3U);
             EXPECT_EQ(bytes[9], 0U);
             EXPECT_EQ(bytes[10], kWalFileHeaderEncodedSize);
             EXPECT_EQ(bytes[11], 0U);
@@ -138,7 +138,7 @@ namespace exchange {
                 WalError::BadMagic);
 
             WalBytes bad_version = encoded_header();
-            write_u16(bad_version, 8, 3);
+            write_u16(bad_version, 8, 4);
             EXPECT_EQ(
                 std::get<WalError>(decode_wal_file_header(bad_version)),
                 WalError::UnsupportedFileVersion);
@@ -157,6 +157,13 @@ namespace exchange {
         }
 
         TEST(WalHeaderCodecTest, RejectsPreviousVersionExplicitly) {
+            WalBytes previous_settlement_format = encoded_header();
+            write_u16(previous_settlement_format, 8, 2);
+            EXPECT_EQ(
+                std::get<WalError>(decode_wal_file_header(
+                    previous_settlement_format)),
+                WalError::UnsupportedFileVersion);
+
             WalBytes previous = encoded_header();
             previous.resize(44);
             write_u16(previous, 8, 1);
@@ -533,7 +540,7 @@ namespace exchange {
                 matching_engine,
                 events,
                 ledger};
-            ExecutionCommandApplier applier{coordinator, events};
+            TradingCommandApplier applier{coordinator, events};
             ExecutionSequencer sequencer;
             ASSERT_TRUE(accounts.create_account(12));
             accounts.fund(12, 10, 1'000);

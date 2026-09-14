@@ -8,11 +8,13 @@ namespace exchange {
         const AccountStore& accounts,
         const OrderReservationStore& reservations,
         const OrderBook& order_book,
+        const ContractStore& contracts,
         InstrumentContext instrument)
         : registry_(registry),
           accounts_(accounts),
           reservations_(reservations),
           order_book_(order_book),
+          contracts_(contracts),
           instrument_(instrument),
           objective_evaluator_(registry, accounts) {
         validate_instrument_context(instrument_);
@@ -53,6 +55,7 @@ namespace exchange {
             std::nullopt,
             {},
             std::nullopt,
+            {},
         };
 
         for (const auto& [order_id, reservation] :
@@ -78,6 +81,7 @@ namespace exchange {
                 agent_id,
                 *objective);
         }
+        observation.contracts = contracts_.find_relevant(agent_id);
         return observation;
     }
 }  // namespace exchange

@@ -20,8 +20,15 @@ namespace exchange {
                                              Result,
                                              SubmitActionResult>) {
                         return value.status == AgentSubmitStatus::Accepted;
-                    } else {
+                    } else if constexpr (std::is_same_v<
+                                             Result,
+                                             CancelActionResult>) {
                         return value.status == AgentCancelStatus::Cancelled;
+                    } else {
+                        static_assert(std::is_same_v<
+                                      Result,
+                                      ContractActionResult>);
+                        return value.status == ContractResult::Success;
                     }
                 },
                 result);
@@ -58,6 +65,50 @@ namespace exchange {
             if (utility.has_value()) {
                 turn.utility_delta = 0;
             }
+        }
+
+        std::optional<ContractState> contract_state_after_action(
+            const AgentAction& action,
+            const AgentActionResult& result,
+            const AgentObservation& post_observation) {
+            std::optional<ContractId> contract_id;
+            if (const auto* contract_result = std::get_if<
+                    ContractActionResult>(&result)) {
+                contract_id = contract_result->contract_id;
+            }
+            if (!contract_id.has_value()) {
+                std::visit(
+                    [&contract_id](const auto& payload) {
+                        using Action = std::decay_t<decltype(payload)>;
+                        if constexpr (std::is_same_v<
+                                          Action,
+                                          AcceptContractAction>
+                                      || std::is_same_v<
+                                          Action,
+                                          RejectContractAction>
+                                      || std::is_same_v<
+                                          Action,
+                                          FulfillResourceObligationAction>
+                                      || std::is_same_v<
+                                          Action,
+                                          SettlePaymentObligationAction>) {
+                            contract_id = payload.contract_id;
+                        }
+                    },
+                    action);
+            }
+            if (!contract_id.has_value()) {
+                return std::nullopt;
+            }
+            const auto contract = std::find_if(
+                post_observation.contracts.begin(),
+                post_observation.contracts.end(),
+                [contract_id](const Contract& contract) {
+                    return contract.id == *contract_id;
+                });
+            return contract == post_observation.contracts.end()
+                ? std::nullopt
+                : std::optional<ContractState>{contract->state};
         }
     }  // namespace
 
@@ -244,6 +295,10 @@ namespace exchange {
             turn.validation = validation;
             turn.economic_constraint = economic_constraint;
             turn.execution_result = std::move(result);
+            turn.contract_state_after_action = contract_state_after_action(
+                *turn.action,
+                *turn.execution_result,
+                post_observation);
             turn.utility_before = utility_before;
             turn.utility_after = utility_after;
             if (utility_before.has_value()) {

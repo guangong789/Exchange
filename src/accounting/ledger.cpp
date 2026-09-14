@@ -185,6 +185,34 @@ namespace exchange {
             }
         }
 
+        void validate_contract_settlement_shape(
+            const ContractSettlementLedgerMetadata& metadata,
+            const std::vector<Posting>& postings) {
+            if (postings.size() != 2) {
+                throw std::invalid_argument(
+                    "Contract settlement must contain exactly two postings");
+            }
+
+            const Posting& payer = postings[0];
+            const Posting& payee = postings[1];
+            if (metadata.contract_id == 0
+                || metadata.payer_account_id == 0
+                || metadata.payee_account_id == 0
+                || metadata.payer_account_id
+                    == metadata.payee_account_id
+                || payer.account_id != metadata.payer_account_id
+                || payee.account_id != metadata.payee_account_id
+                || payer.asset_id != payee.asset_id
+                || payer.bucket != BalanceBucket::Available
+                || payee.bucket != BalanceBucket::Available
+                || payer.delta >= 0
+                || payee.delta <= 0
+                || payer.delta != -payee.delta) {
+                throw std::invalid_argument(
+                    "invalid canonical Contract settlement shape");
+            }
+        }
+
         void validate_asset_balancing(
             const std::vector<Posting>& postings) {
             std::map<AssetId, WideAmount> sums;
@@ -233,8 +261,17 @@ namespace exchange {
                                              TradeLedgerMetadata>) {
                         validate_trade_metadata(metadata.trade);
                         validate_trade_shape(transaction.postings);
-                    } else {
+                    } else if constexpr (std::is_same_v<
+                                             Metadata,
+                                             FundingLedgerMetadata>) {
                         validate_funding_shape(
+                            metadata,
+                            transaction.postings);
+                    } else {
+                        static_assert(std::is_same_v<
+                                      Metadata,
+                                      ContractSettlementLedgerMetadata>);
+                        validate_contract_settlement_shape(
                             metadata,
                             transaction.postings);
                     }
@@ -393,6 +430,52 @@ namespace exchange {
                     asset_id,
                     BalanceBucket::Available,
                     amount},
+            },
+        };
+        validate_transaction(transaction);
+        return transaction;
+    }
+
+    LedgerTransaction make_contract_settlement_ledger_transaction(
+        ContractId contract_id,
+        AccountId payer_account_id,
+        AccountId payee_account_id,
+        AssetId quote_asset_id,
+        Amount quote_amount) {
+        if (contract_id == 0) {
+            throw std::invalid_argument(
+                "Contract settlement ID must be non-zero");
+        }
+        if (payer_account_id == 0 || payee_account_id == 0
+            || payer_account_id == payee_account_id) {
+            throw std::invalid_argument(
+                "Contract settlement accounts must be distinct and non-zero");
+        }
+        if (quote_asset_id == 0) {
+            throw std::invalid_argument(
+                "Contract settlement AssetId must be non-zero");
+        }
+        if (quote_amount <= 0) {
+            throw std::invalid_argument(
+                "Contract settlement amount must be positive");
+        }
+
+        LedgerTransaction transaction{
+            ContractSettlementLedgerMetadata{
+                contract_id,
+                payer_account_id,
+                payee_account_id},
+            {
+                Posting{
+                    payer_account_id,
+                    quote_asset_id,
+                    BalanceBucket::Available,
+                    -quote_amount},
+                Posting{
+                    payee_account_id,
+                    quote_asset_id,
+                    BalanceBucket::Available,
+                    quote_amount},
             },
         };
         validate_transaction(transaction);

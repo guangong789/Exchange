@@ -424,6 +424,40 @@ namespace exchange {
         }
 
         TEST(AccountStoreTransferTest,
+             ValidationClassifiesBusinessFailuresWithoutMutation) {
+            AccountStore store;
+            ASSERT_TRUE(store.create_account(1));
+            ASSERT_TRUE(store.create_account(2));
+            store.fund(1, 10, 100);
+            store.fund(
+                2,
+                10,
+                std::numeric_limits<Amount>::max());
+            const auto before = store.entries();
+
+            EXPECT_EQ(
+                store.validate_available_transfer(1, 2, 10, 101),
+                AvailableTransferValidationResult::InsufficientFunds);
+            EXPECT_EQ(
+                store.validate_available_transfer(1, 2, 10, 1),
+                AvailableTransferValidationResult::DestinationOverflow);
+            EXPECT_EQ(
+                store.validate_available_transfer(1, 3, 10, 1),
+                AvailableTransferValidationResult::AccountNotFound);
+            EXPECT_EQ(store.entries(), before);
+
+            AccountStore ready;
+            ASSERT_TRUE(ready.create_account(1));
+            ASSERT_TRUE(ready.create_account(2));
+            ready.fund(1, 10, 100);
+            const auto ready_before = ready.entries();
+            EXPECT_EQ(
+                ready.validate_available_transfer(1, 2, 10, 100),
+                AvailableTransferValidationResult::Ready);
+            EXPECT_EQ(ready.entries(), ready_before);
+        }
+
+        TEST(AccountStoreTransferTest,
              IdenticalTransfersPreservePerAssetSupplyDeterministically) {
             AccountStore first;
             AccountStore second;

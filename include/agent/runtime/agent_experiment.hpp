@@ -43,6 +43,7 @@ namespace exchange {
         std::optional<AgentUtilityBreakdown> utility_before;
         std::optional<AgentUtilityBreakdown> utility_after;
         std::optional<UtilityValue> utility_delta;
+        std::optional<ContractState> contract_state_after_action;
         AgentTurnStatus status{AgentTurnStatus::DecisionFailed};
 
         bool operator==(const AgentTurnRecord&) const = default;
@@ -53,6 +54,17 @@ namespace exchange {
         std::uint64_t turns{};
         std::uint64_t proposed_submits{};
         std::uint64_t proposed_cancels{};
+        std::uint64_t contract_proposals{};
+        std::uint64_t contract_accepts{};
+        std::uint64_t contract_rejects{};
+        std::uint64_t contract_fulfillment_attempts{};
+        std::uint64_t successful_contract_fulfillments{};
+        std::uint64_t contract_fulfillment_rejections{};
+        std::uint64_t contract_settlement_attempts{};
+        std::uint64_t successful_contract_settlements{};
+        std::uint64_t contract_settlement_rejections{};
+        std::uint64_t successful_contract_actions{};
+        std::uint64_t contract_execution_rejections{};
         std::uint64_t holds{};
         std::uint64_t decision_failures{};
         std::uint64_t structural_rejections{};
@@ -84,8 +96,26 @@ namespace exchange {
         std::uint64_t total_buys{};
         std::uint64_t total_sells{};
         std::uint64_t total_holds{};
+        std::uint64_t total_contract_proposals{};
+        std::uint64_t total_contract_accepts{};
+        std::uint64_t total_contract_rejects{};
+        std::uint64_t total_contract_fulfillment_attempts{};
+        std::uint64_t total_successful_contract_fulfillments{};
+        std::uint64_t total_contract_fulfillment_rejections{};
+        std::uint64_t total_contract_settlement_attempts{};
+        std::uint64_t total_successful_contract_settlements{};
+        std::uint64_t total_contract_settlement_rejections{};
+        std::uint64_t total_successful_contract_actions{};
+        std::uint64_t total_contract_execution_rejections{};
 
         bool operator==(const SocietyExperimentMetrics&) const = default;
+    };
+
+    struct ContractPairInteractionMetrics {
+        std::uint64_t proposal_attempts{};
+        std::uint64_t accepted_contracts{};
+
+        bool operator==(const ContractPairInteractionMetrics&) const = default;
     };
 
     class AgentExperimentMetrics {
@@ -96,9 +126,17 @@ namespace exchange {
             AgentId agent_id) const noexcept;
         [[nodiscard]] const std::map<AgentId, PerAgentExperimentMetrics>&
             per_agent() const noexcept;
+        [[nodiscard]] const std::map<
+            std::pair<AgentId, AgentId>,
+            ContractPairInteractionMetrics>&
+        contract_pair_interactions() const noexcept;
         [[nodiscard]] SocietyExperimentMetrics society() const;
 
     private:
         std::map<AgentId, PerAgentExperimentMetrics> per_agent_;
+        std::map<
+            std::pair<AgentId, AgentId>,
+            ContractPairInteractionMetrics>
+            contract_pair_interactions_;
     };
 }  // namespace exchange

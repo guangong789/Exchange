@@ -7,21 +7,15 @@
 #include <vector>
 
 #include "accounting/account.hpp"
+#include "agent/domain/agent_id.hpp"
+#include "agent/domain/agent_identity.hpp"
+#include "agent/domain/contract.hpp"
 #include "agent/domain/economic_profile.hpp"
 #include "agent/domain/preference_profile.hpp"
 #include "agent/domain/world_state.hpp"
 #include "core/types.hpp"
 
 namespace exchange {
-    using AgentId = std::uint64_t;
-
-    struct AgentIdentity {
-        AgentId agent_id{};
-        AccountId account_id{};
-
-        bool operator==(const AgentIdentity&) const = default;
-    };
-
     struct AssetTargetObjective {
         AssetId asset_id{};
         Amount target_amount{};
@@ -58,6 +52,7 @@ namespace exchange {
         std::optional<ObjectiveProgress> objective;
         AgentEconomicProfile economic_profile;
         std::optional<AgentPreferenceProfile> preference_profile;
+        std::vector<Contract> contracts;
 
         bool operator==(const AgentObservation&) const = default;
     };
@@ -80,9 +75,47 @@ namespace exchange {
         bool operator==(const HoldAction&) const = default;
     };
 
+    struct ProposeContractAction {
+        AgentId counterparty{};
+        ContractTerms terms;
+
+        bool operator==(const ProposeContractAction&) const = default;
+    };
+
+    struct AcceptContractAction {
+        ContractId contract_id{};
+
+        bool operator==(const AcceptContractAction&) const = default;
+    };
+
+    struct RejectContractAction {
+        ContractId contract_id{};
+
+        bool operator==(const RejectContractAction&) const = default;
+    };
+
+    struct FulfillResourceObligationAction {
+        ContractId contract_id{};
+
+        bool operator==(
+            const FulfillResourceObligationAction&) const = default;
+    };
+
+    struct SettlePaymentObligationAction {
+        ContractId contract_id{};
+
+        bool operator==(
+            const SettlePaymentObligationAction&) const = default;
+    };
+
     using AgentAction = std::variant<
         SubmitOrderAction,
         CancelOrderAction,
+        ProposeContractAction,
+        AcceptContractAction,
+        RejectContractAction,
+        FulfillResourceObligationAction,
+        SettlePaymentObligationAction,
         HoldAction>;
 
     enum class AgentSubmitStatus {
@@ -119,9 +152,17 @@ namespace exchange {
         bool operator==(const HoldActionResult&) const = default;
     };
 
+    struct ContractActionResult {
+        std::optional<ContractId> contract_id;
+        ContractResult status{ContractResult::InvalidTerms};
+
+        bool operator==(const ContractActionResult&) const = default;
+    };
+
     using AgentActionResult = std::variant<
         SubmitActionResult,
         CancelActionResult,
+        ContractActionResult,
         HoldActionResult>;
 
     class AgentDecisionError : public std::runtime_error {

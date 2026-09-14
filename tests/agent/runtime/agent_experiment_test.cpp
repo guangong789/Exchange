@@ -154,6 +154,132 @@ namespace exchange {
                 1U);
         }
 
+        TEST(AgentExperimentMetricsTest, CountsContractActionOutcomes) {
+            AgentExperimentMetrics metrics;
+
+            AgentTurnRecord proposal;
+            proposal.agent_id = 101;
+            proposal.action = ProposeContractAction{
+                202,
+                ContractTerms{
+                    101,
+                    202,
+                    500,
+                    ResourceKind::ComputeCredit,
+                    10}};
+            proposal.execution_result = ContractActionResult{
+                1,
+                ContractResult::Success};
+            proposal.status = AgentTurnStatus::Executed;
+            metrics.record(proposal);
+
+            AgentTurnRecord accept;
+            accept.agent_id = 101;
+            accept.action = AcceptContractAction{1};
+            accept.execution_result = ContractActionResult{
+                1,
+                ContractResult::Success};
+            accept.status = AgentTurnStatus::Executed;
+            accept.observation.contracts.push_back(Contract{
+                1,
+                101,
+                202,
+                ContractTerms{
+                    101,
+                    202,
+                    500,
+                    ResourceKind::ComputeCredit,
+                    10},
+                PaymentObligation{101, 202, 500, false},
+                ResourceDeliveryObligation{
+                    202,
+                    101,
+                    ResourceKind::ComputeCredit,
+                    10,
+                    false},
+                ContractState::Proposed});
+            metrics.record(accept);
+
+            AgentTurnRecord reject;
+            reject.agent_id = 101;
+            reject.action = RejectContractAction{1};
+            reject.execution_result = ContractActionResult{
+                1,
+                ContractResult::InvalidTransition};
+            reject.status = AgentTurnStatus::ExecutionRejected;
+            metrics.record(reject);
+
+            AgentTurnRecord fulfillment;
+            fulfillment.agent_id = 101;
+            fulfillment.action = FulfillResourceObligationAction{1};
+            fulfillment.execution_result = ContractActionResult{
+                1,
+                ContractResult::Success};
+            fulfillment.status = AgentTurnStatus::Executed;
+            metrics.record(fulfillment);
+
+            AgentTurnRecord failed_fulfillment;
+            failed_fulfillment.agent_id = 101;
+            failed_fulfillment.action =
+                FulfillResourceObligationAction{2};
+            failed_fulfillment.execution_result = ContractActionResult{
+                2,
+                ContractResult::UnauthorizedActor};
+            failed_fulfillment.status = AgentTurnStatus::ExecutionRejected;
+            metrics.record(failed_fulfillment);
+
+            AgentTurnRecord settlement;
+            settlement.agent_id = 101;
+            settlement.action = SettlePaymentObligationAction{1};
+            settlement.execution_result = ContractActionResult{
+                1,
+                ContractResult::Success};
+            settlement.status = AgentTurnStatus::Executed;
+            metrics.record(settlement);
+
+            AgentTurnRecord failed_settlement;
+            failed_settlement.agent_id = 101;
+            failed_settlement.action =
+                SettlePaymentObligationAction{2};
+            failed_settlement.execution_result = ContractActionResult{
+                2,
+                ContractResult::InsufficientFunds};
+            failed_settlement.status = AgentTurnStatus::ExecutionRejected;
+            metrics.record(failed_settlement);
+
+            const PerAgentExperimentMetrics* agent =
+                metrics.find_agent(101);
+            ASSERT_NE(agent, nullptr);
+            EXPECT_EQ(agent->contract_proposals, 1U);
+            EXPECT_EQ(agent->contract_accepts, 1U);
+            EXPECT_EQ(agent->contract_rejects, 1U);
+            EXPECT_EQ(agent->contract_fulfillment_attempts, 2U);
+            EXPECT_EQ(agent->successful_contract_fulfillments, 1U);
+            EXPECT_EQ(agent->contract_fulfillment_rejections, 1U);
+            EXPECT_EQ(agent->contract_settlement_attempts, 2U);
+            EXPECT_EQ(agent->successful_contract_settlements, 1U);
+            EXPECT_EQ(agent->contract_settlement_rejections, 1U);
+            EXPECT_EQ(agent->successful_contract_actions, 4U);
+            EXPECT_EQ(agent->contract_execution_rejections, 3U);
+
+            const SocietyExperimentMetrics society = metrics.society();
+            EXPECT_EQ(society.total_contract_proposals, 1U);
+            EXPECT_EQ(society.total_contract_accepts, 1U);
+            EXPECT_EQ(society.total_contract_rejects, 1U);
+            EXPECT_EQ(society.total_contract_fulfillment_attempts, 2U);
+            EXPECT_EQ(society.total_successful_contract_fulfillments, 1U);
+            EXPECT_EQ(society.total_contract_fulfillment_rejections, 1U);
+            EXPECT_EQ(society.total_contract_settlement_attempts, 2U);
+            EXPECT_EQ(society.total_successful_contract_settlements, 1U);
+            EXPECT_EQ(society.total_contract_settlement_rejections, 1U);
+            EXPECT_EQ(society.total_successful_contract_actions, 4U);
+            EXPECT_EQ(society.total_contract_execution_rejections, 3U);
+            ASSERT_EQ(metrics.contract_pair_interactions().size(), 1U);
+            EXPECT_EQ(
+                metrics.contract_pair_interactions().at({101, 202}),
+                (ContractPairInteractionMetrics{1, 1}));
+        }
+
         TEST(AgentExperimentMetricsTest,
              AccumulatesUtilityDeltasAndTracksExtrema) {
             AgentExperimentMetrics metrics;

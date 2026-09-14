@@ -1,4 +1,4 @@
-#include "execution/execution_command_applier.hpp"
+#include "execution/trading_command_applier.hpp"
 #include "execution/trading_request_admission.hpp"
 #include "execution/trading_request_executor.hpp"
 
@@ -50,7 +50,7 @@ namespace exchange {
             Ledger ledger;
             ExecutionCoordinator coordinator;
             ExecutionSequencer sequencer;
-            ExecutionCommandApplier applier;
+            TradingCommandApplier applier;
             TradingRequestExecutor executor;
         };
 
@@ -215,7 +215,7 @@ namespace exchange {
                 1U);
         }
 
-        TEST(ExecutionCommandApplierTest,
+        TEST(TradingCommandApplierTest,
              ExplicitSubmitUsesRecordedIdentityAndDoesNotAdvanceSequencer) {
             ExecutionWorld world;
             ASSERT_TRUE(world.accounts.create_account(1));
@@ -238,7 +238,7 @@ namespace exchange {
                 (AssignedOrderIdentity{1, 1}));
         }
 
-        TEST(ExecutionCommandApplierTest,
+        TEST(TradingCommandApplierTest,
              SameExplicitCommandProducesEquivalentFreshState) {
             ExecutionWorld first;
             ExecutionWorld second;
@@ -273,7 +273,7 @@ namespace exchange {
             EXPECT_EQ(first.ledger.entries(), second.ledger.entries());
         }
 
-        TEST(ExecutionCommandApplierTest,
+        TEST(TradingCommandApplierTest,
              ExplicitCancelUsesRecordedTarget) {
             ExecutionWorld world;
             ASSERT_TRUE(world.accounts.create_account(1));
@@ -304,7 +304,7 @@ namespace exchange {
             EXPECT_EQ(world.accounts.find_balance(1, 10), (Balance{1'000, 0}));
         }
 
-        TEST(ExecutionCommandApplierTest,
+        TEST(TradingCommandApplierTest,
              MapsBusinessRejectionsWithoutChangingExplicitIdentity) {
             ExecutionWorld world;
             const ExecutionCommand missing_account = SubmitExecutionCommand{
@@ -322,7 +322,7 @@ namespace exchange {
             EXPECT_EQ(world.matching_engine.order_book().order_count(), 0U);
         }
 
-        TEST(ExecutionCommandApplierTest,
+        TEST(TradingCommandApplierTest,
              UnexpectedCoordinatorExceptionPropagates) {
             ExecutionWorld world;
             ASSERT_TRUE(world.accounts.create_account(1));
@@ -338,7 +338,7 @@ namespace exchange {
                 std::logic_error);
         }
 
-        TEST(ExecutionCommandApplierTest,
+        TEST(TradingCommandApplierTest,
              InvalidArgumentFromExplicitApplicationPropagates) {
             ExecutionWorld world;
             ASSERT_TRUE(world.accounts.create_account(1));

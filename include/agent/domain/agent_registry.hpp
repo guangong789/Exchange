@@ -5,7 +5,7 @@
 #include <map>
 #include <optional>
 
-#include "agent/domain/agent.hpp"
+#include "agent/domain/agent_identity.hpp"
 
 namespace exchange {
     class AgentRegistry {

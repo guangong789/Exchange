@@ -1,6 +1,7 @@
 #include "agent/domain/action_validation.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <variant>
@@ -50,6 +51,54 @@ namespace exchange {
                     return active
                         ? AgentActionValidationResult::Valid
                         : AgentActionValidationResult::CancelTargetNotActive;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         ProposeContractAction>) {
+                    if (payload.counterparty == 0
+                        || payload.counterparty == observation.agent_id) {
+                        return AgentActionValidationResult::
+                            InvalidContractCounterparty;
+                    }
+                    const ContractTerms& terms = payload.terms;
+                    const bool valid_parties =
+                        (terms.payer == observation.agent_id
+                         && terms.payee == payload.counterparty)
+                        || (terms.payer == payload.counterparty
+                            && terms.payee == observation.agent_id);
+                    if (observation.agent_id == 0 || !valid_parties) {
+                        return AgentActionValidationResult::
+                            InvalidContractParties;
+                    }
+                    if (terms.quote_payment_amount <= 0) {
+                        return AgentActionValidationResult::
+                            InvalidContractPayment;
+                    }
+                    if (terms.resource != ResourceKind::ComputeCredit) {
+                        return AgentActionValidationResult::
+                            InvalidContractResource;
+                    }
+                    if (terms.resource_quantity <= 0) {
+                        return AgentActionValidationResult::
+                            InvalidContractQuantity;
+                    }
+                    return AgentActionValidationResult::Valid;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         AcceptContractAction>
+                                     || std::is_same_v<
+                                         Action,
+                                         RejectContractAction>
+                                     || std::is_same_v<
+                                         Action,
+                                         FulfillResourceObligationAction>
+                                     || std::is_same_v<
+                                         Action,
+                                         SettlePaymentObligationAction>) {
+                    return payload.contract_id == 0
+                            || payload.contract_id
+                                == std::numeric_limits<ContractId>::max()
+                        ? AgentActionValidationResult::InvalidContractId
+                        : AgentActionValidationResult::Valid;
                 } else {
                     return AgentActionValidationResult::Valid;
                 }

@@ -76,5 +76,132 @@ namespace exchange {
                     instrument),
                 AgentActionValidationResult::InvalidFinancialValue);
         }
+
+        TEST(AgentActionValidationTest, ValidatesContractActionShape) {
+            AgentObservation observation;
+            observation.agent_id = 101;
+            const ProposeContractAction valid{
+                202,
+                ContractTerms{
+                    101,
+                    202,
+                    500,
+                    ResourceKind::ComputeCredit,
+                    10}};
+            EXPECT_EQ(
+                validate_agent_action(valid, observation, instrument),
+                AgentActionValidationResult::Valid);
+            EXPECT_EQ(
+                validate_agent_action(
+                    AcceptContractAction{1},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::Valid);
+            EXPECT_EQ(
+                validate_agent_action(
+                    RejectContractAction{1},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::Valid);
+            EXPECT_EQ(
+                validate_agent_action(
+                    FulfillResourceObligationAction{1},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::Valid);
+            EXPECT_EQ(
+                validate_agent_action(
+                    SettlePaymentObligationAction{1},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::Valid);
+
+            ProposeContractAction invalid = valid;
+            invalid.counterparty = 0;
+            EXPECT_EQ(
+                validate_agent_action(invalid, observation, instrument),
+                AgentActionValidationResult::InvalidContractCounterparty);
+
+            invalid = valid;
+            invalid.counterparty = 101;
+            EXPECT_EQ(
+                validate_agent_action(invalid, observation, instrument),
+                AgentActionValidationResult::InvalidContractCounterparty);
+
+            invalid = valid;
+            invalid.terms = ContractTerms{
+                202,
+                303,
+                500,
+                ResourceKind::ComputeCredit,
+                10};
+            EXPECT_EQ(
+                validate_agent_action(invalid, observation, instrument),
+                AgentActionValidationResult::InvalidContractParties);
+
+            invalid = valid;
+            invalid.terms.quote_payment_amount = 0;
+            EXPECT_EQ(
+                validate_agent_action(invalid, observation, instrument),
+                AgentActionValidationResult::InvalidContractPayment);
+
+            invalid = valid;
+            invalid.terms.resource = static_cast<ResourceKind>(99);
+            EXPECT_EQ(
+                validate_agent_action(invalid, observation, instrument),
+                AgentActionValidationResult::InvalidContractResource);
+
+            invalid = valid;
+            invalid.terms.resource_quantity = 0;
+            EXPECT_EQ(
+                validate_agent_action(invalid, observation, instrument),
+                AgentActionValidationResult::InvalidContractQuantity);
+
+            EXPECT_EQ(
+                validate_agent_action(
+                    AcceptContractAction{0},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+            EXPECT_EQ(
+                validate_agent_action(
+                    RejectContractAction{0},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+            EXPECT_EQ(
+                validate_agent_action(
+                    FulfillResourceObligationAction{0},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+            EXPECT_EQ(
+                validate_agent_action(
+                    SettlePaymentObligationAction{0},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+            EXPECT_EQ(
+                validate_agent_action(
+                    AcceptContractAction{
+                        std::numeric_limits<ContractId>::max()},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+            EXPECT_EQ(
+                validate_agent_action(
+                    FulfillResourceObligationAction{
+                        std::numeric_limits<ContractId>::max()},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+            EXPECT_EQ(
+                validate_agent_action(
+                    SettlePaymentObligationAction{
+                        std::numeric_limits<ContractId>::max()},
+                    observation,
+                    instrument),
+                AgentActionValidationResult::InvalidContractId);
+        }
     }  // namespace
 }  // namespace exchange

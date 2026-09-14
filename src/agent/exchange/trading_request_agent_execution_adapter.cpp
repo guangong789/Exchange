@@ -67,9 +67,11 @@ namespace exchange {
         TradingRequestAgentExecutionAdapter(
             const AgentRegistry& registry,
             TradingRequestExecutor& executor,
+            ContractRequestExecutor& contract_executor,
             RequestId first_request_id)
         : registry_(registry),
           executor_(executor),
+          contract_executor_(contract_executor),
           next_request_id_(first_request_id) {
         if (first_request_id == 0) {
             throw std::invalid_argument(
@@ -114,7 +116,9 @@ namespace exchange {
                         *response.assigned_order_id,
                         accepted_timestamp(response),
                         status};
-                } else {
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         CancelOrderAction>) {
                     const TradingResponse response = executor_.execute(
                         TradingRequest{
                             allocate_request_id(),
@@ -122,6 +126,53 @@ namespace exchange {
                             CancelTradingRequest{payload.order_id}});
                     return CancelActionResult{
                         map_cancel_status(response.result)};
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         ProposeContractAction>) {
+                    const ContractExecutionResponse response =
+                        contract_executor_.create_contract(
+                            CreateContractRequest{
+                                agent_id,
+                                payload.counterparty,
+                                payload.terms});
+                    return ContractActionResult{
+                        response.contract_id,
+                        response.result};
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         AcceptContractAction>) {
+                    return ContractActionResult{
+                        std::optional<ContractId>{payload.contract_id},
+                        contract_executor_.accept_contract(
+                            payload.contract_id,
+                            agent_id)};
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         RejectContractAction>) {
+                    return ContractActionResult{
+                        std::optional<ContractId>{payload.contract_id},
+                        contract_executor_.reject_contract(
+                            payload.contract_id,
+                            agent_id)};
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         FulfillResourceObligationAction>) {
+                    return ContractActionResult{
+                        std::optional<ContractId>{payload.contract_id},
+                        contract_executor_.fulfill_resource(
+                            payload.contract_id,
+                            agent_id)};
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         SettlePaymentObligationAction>) {
+                    return ContractActionResult{
+                        std::optional<ContractId>{payload.contract_id},
+                        contract_executor_.settle_payment(
+                            payload.contract_id,
+                            agent_id)};
+                } else {
+                    static_assert(std::is_same_v<Action, HoldAction>);
+                    return HoldActionResult{};
                 }
             },
             action);

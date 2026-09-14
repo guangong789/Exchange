@@ -8,16 +8,23 @@ option(EXCHANGE_BUILD_DEEPSEEK_PROVIDER "Build the DeepSeek agent provider" ON)
 option(EXCHANGE_BUILD_BINANCE_ALPHA_FEED "Build the Binance Alpha market feed" ON)
 option(EXCHANGE_BUILD_AGENT_LIVE_SMOKE
     "Build the opt-in live Agent Native smoke application" OFF)
+option(EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE
+    "Build the opt-in multi-Agent society experiment" OFF)
 find_package(Threads REQUIRED)
 
 add_library(exchange_core
+    src/agent/domain/agent_registry.cpp
+    src/agent/domain/contract_store.cpp
     src/accounting/account_store.cpp
     src/accounting/execution_coordinator.cpp
     src/accounting/financial_conversion.cpp
     src/accounting/funding_coordinator.cpp
     src/accounting/ledger.cpp
-    src/execution/execution_command_applier.cpp
+    src/execution/trading_command_applier.cpp
     src/execution/execution_sequencer.cpp
+    src/execution/contract_command_applier.cpp
+    src/execution/contract_request_executor.cpp
+    src/execution/contract_sequencer.cpp
     src/execution/trading_request_admission.cpp
     src/execution/trading_request_executor.cpp
     src/execution/trading_runtime.cpp
@@ -95,7 +102,6 @@ add_library(exchange_agent
     src/agent/domain/action_validation.cpp
     src/agent/domain/economic_constraints.cpp
     src/agent/domain/external_market.cpp
-    src/agent/domain/agent_registry.cpp
     src/agent/domain/utility.cpp
     src/agent/exchange/trading_request_agent_execution_adapter.cpp
     src/agent/exchange/agent_observation_service.cpp
@@ -130,6 +136,7 @@ if(EXCHANGE_BUILD_BINANCE_ALPHA_FEED)
             nlohmann_json::nlohmann_json
             OpenSSL::SSL
             OpenSSL::Crypto
+            Boost::headers
             Threads::Threads
     )
     target_compile_definitions(exchange_agent_binance_alpha
@@ -192,6 +199,34 @@ if(EXCHANGE_BUILD_AGENT_LIVE_SMOKE)
     else()
         target_compile_options(
             exchange_agent_live_smoke PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()
+
+if(EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE)
+    if(NOT TARGET exchange_agent_deepseek
+        OR NOT TARGET exchange_agent_binance_alpha)
+        message(FATAL_ERROR
+            "The Agent society smoke requires the DeepSeek provider and "
+            "Binance Alpha feed")
+    endif()
+
+    add_executable(exchange_agent_society_smoke
+        apps/exchange_agent_society_smoke/main.cpp
+    )
+    target_link_libraries(exchange_agent_society_smoke
+        PRIVATE
+            exchange::agent
+            exchange::agent_deepseek
+            exchange::agent_binance_alpha
+            Threads::Threads
+    )
+    target_compile_features(exchange_agent_society_smoke PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(
+            exchange_agent_society_smoke PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(
+            exchange_agent_society_smoke PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
@@ -265,6 +300,9 @@ if(EXCHANGE_BUILD_TESTS)
         tests/durability/execution_wal_test.cpp
         tests/durability/execution_wal_writer_test.cpp
         tests/durability/durable_execution_test.cpp
+        tests/durability/durable_contract_execution_test.cpp
+        tests/durability/durable_contract_process_test.cpp
+        tests/durability/execution_wal_contract_test.cpp
         tests/durability/execution_recovery_test.cpp
         tests/execution/execution_command_test.cpp
         tests/execution/trading_bootstrap_test.cpp
@@ -283,12 +321,16 @@ if(EXCHANGE_BUILD_TESTS)
     )
     list(APPEND EXCHANGE_TEST_SOURCES
         tests/agent/exchange/agent_foundation_test.cpp
+        tests/agent/exchange/contract_store_isolation_test.cpp
         tests/agent/exchange/durable_agent_execution_test.cpp
         tests/agent/exchange/agent_objective_test.cpp
         tests/agent/domain/action_validation_test.cpp
+        tests/agent/domain/contract_store_test.cpp
         tests/agent/domain/economic_constraints_test.cpp
         tests/agent/domain/utility_test.cpp
         tests/agent/runtime/agent_experiment_test.cpp
+        tests/agent/runtime/agent_contract_runtime_test.cpp
+        tests/agent/runtime/agent_society_experiment_test.cpp
         tests/agent/runtime/agent_runtime_test.cpp)
     if(TARGET exchange_agent_binance_alpha)
         list(APPEND EXCHANGE_TEST_SOURCES

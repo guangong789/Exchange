@@ -16,11 +16,25 @@ namespace exchange {
               matching_engine_,
               events_,
               ledger_),
+          contract_command_applier_(
+              contracts_,
+              accounts_,
+              ledger_,
+              instrument_.quote_asset),
           executor_(
               instrument_,
               execution_coordinator_,
               events_,
-              sequencer_) {}
+              sequencer_,
+              nullptr,
+              &runtime_status_),
+          contract_executor_(
+              agent_registry_,
+              contracts_,
+              contract_sequencer_,
+              contract_command_applier_,
+              nullptr,
+              &runtime_status_) {}
 
     std::unique_ptr<TradingRuntime> TradingRuntime::create_durable(
         InstrumentContext instrument,
@@ -39,7 +53,7 @@ namespace exchange {
         std::vector<WalRecord> records =
             runtime->wal_writer_->take_recovered_records();
 
-        ExecutionCommandApplier recovery_applier{
+        TradingCommandApplier recovery_applier{
             runtime->execution_coordinator_,
             runtime->events_};
         ExecutionRecovery recovery{
@@ -50,7 +64,10 @@ namespace exchange {
             runtime->events_,
             runtime->ledger_,
             runtime->sequencer_,
-            recovery_applier};
+            recovery_applier,
+            runtime->contracts_,
+            runtime->contract_sequencer_,
+            runtime->contract_command_applier_};
         static_cast<void>(recovery.recover(
             records,
             runtime->wal_writer_->record_count(),
@@ -65,12 +82,18 @@ namespace exchange {
         }
 
         runtime->executor_.attach_command_journal(*runtime->wal_writer_);
+        runtime->contract_executor_.attach_command_journal(
+            *runtime->wal_writer_);
         runtime->bootstrap_sealed_ = true;
         return runtime;
     }
 
     TradingRequestExecutor& TradingRuntime::executor() noexcept {
         return executor_;
+    }
+
+    ContractRequestExecutor& TradingRuntime::contract_executor() noexcept {
+        return contract_executor_;
     }
 
     const InstrumentContext& TradingRuntime::instrument() const noexcept {
@@ -100,5 +123,17 @@ namespace exchange {
 
     const Ledger& TradingRuntime::ledger() const noexcept {
         return ledger_;
+    }
+
+    AgentRegistry& TradingRuntime::agent_registry() noexcept {
+        return agent_registry_;
+    }
+
+    const AgentRegistry& TradingRuntime::agent_registry() const noexcept {
+        return agent_registry_;
+    }
+
+    const ContractStore& TradingRuntime::contracts() const noexcept {
+        return contracts_;
     }
 }  // namespace exchange

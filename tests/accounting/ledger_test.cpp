@@ -107,6 +107,32 @@ namespace exchange {
             };
         }
 
+        LedgerTransaction contract_settlement_transaction(
+            ContractId contract_id = 9,
+            AccountId payer_account_id = 10,
+            AccountId payee_account_id = 20,
+            AssetId asset_id = 7,
+            Amount amount = 500) {
+            return LedgerTransaction{
+                ContractSettlementLedgerMetadata{
+                    contract_id,
+                    payer_account_id,
+                    payee_account_id},
+                {
+                    Posting{
+                        payer_account_id,
+                        asset_id,
+                        BalanceBucket::Available,
+                        -amount},
+                    Posting{
+                        payee_account_id,
+                        asset_id,
+                        BalanceBucket::Available,
+                        amount},
+                },
+            };
+        }
+
         Order limit_order(
             OrderId id,
             Side side,
@@ -1962,6 +1988,78 @@ namespace exchange {
             EXPECT_EQ(ledger.entries()[0], (LedgerEntry{1, funding}));
             EXPECT_EQ(ledger.entries()[1], (LedgerEntry{2, reserve}));
             EXPECT_EQ(ledger.entries()[2], (LedgerEntry{3, trade}));
+        }
+
+        TEST(LedgerContractSettlementTest,
+             BuildsTypedCanonicalTransferAndSharesLedgerSequence) {
+            const LedgerTransaction settlement =
+                make_contract_settlement_ledger_transaction(
+                    9,
+                    10,
+                    20,
+                    7,
+                    500);
+            EXPECT_EQ(settlement, contract_settlement_transaction());
+            ASSERT_TRUE(std::holds_alternative<
+                        ContractSettlementLedgerMetadata>(
+                settlement.metadata));
+            EXPECT_FALSE(std::holds_alternative<TradeLedgerMetadata>(
+                settlement.metadata));
+
+            Ledger ledger;
+            const LedgerTransaction trade = trade_transaction();
+            ledger.append_batch({trade, settlement});
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(ledger.entries()[0], (LedgerEntry{1, trade}));
+            EXPECT_EQ(
+                ledger.entries()[1],
+                (LedgerEntry{2, settlement}));
+        }
+
+        TEST(LedgerContractSettlementTest,
+             RejectsInvalidBuilderInputsAndMalformedShapes) {
+            EXPECT_THROW(
+                static_cast<void>(
+                    make_contract_settlement_ledger_transaction(
+                        0, 10, 20, 7, 500)),
+                std::invalid_argument);
+            EXPECT_THROW(
+                static_cast<void>(
+                    make_contract_settlement_ledger_transaction(
+                        9, 10, 10, 7, 500)),
+                std::invalid_argument);
+            EXPECT_THROW(
+                static_cast<void>(
+                    make_contract_settlement_ledger_transaction(
+                        9, 10, 20, 0, 500)),
+                std::invalid_argument);
+            EXPECT_THROW(
+                static_cast<void>(
+                    make_contract_settlement_ledger_transaction(
+                        9, 10, 20, 7, 0)),
+                std::invalid_argument);
+
+            const auto expect_invalid = [](LedgerTransaction transaction) {
+                Ledger ledger;
+                EXPECT_THROW(
+                    ledger.append(std::move(transaction)),
+                    std::invalid_argument);
+                EXPECT_TRUE(ledger.entries().empty());
+            };
+            LedgerTransaction wrong_bucket =
+                contract_settlement_transaction();
+            wrong_bucket.postings[0].bucket = BalanceBucket::Reserved;
+            expect_invalid(std::move(wrong_bucket));
+
+            LedgerTransaction wrong_party =
+                contract_settlement_transaction();
+            wrong_party.postings[1].account_id = 30;
+            expect_invalid(std::move(wrong_party));
+
+            LedgerTransaction unbalanced =
+                contract_settlement_transaction();
+            unbalanced.postings[1].delta = 499;
+            expect_invalid(std::move(unbalanced));
         }
 
         TEST(LedgerTest, ExposesHistoryAsConstReferenceOnly) {

@@ -116,6 +116,37 @@ namespace exchange {
             EXPECT_EQ(
                 evaluate(CancelOrderAction{99}, observation, profile),
                 AgentEconomicConstraintResult::Allowed);
+            EXPECT_EQ(
+                evaluate(
+                    ProposeContractAction{
+                        202,
+                        ContractTerms{
+                            101,
+                            202,
+                            std::numeric_limits<Amount>::max(),
+                            ResourceKind::ComputeCredit,
+                            std::numeric_limits<ResourceQuantity>::max()}},
+                    observation,
+                    profile),
+                AgentEconomicConstraintResult::Allowed);
+            EXPECT_EQ(
+                evaluate(AcceptContractAction{1}, observation, profile),
+                AgentEconomicConstraintResult::Allowed);
+            EXPECT_EQ(
+                evaluate(RejectContractAction{1}, observation, profile),
+                AgentEconomicConstraintResult::Allowed);
+            EXPECT_EQ(
+                evaluate(
+                    FulfillResourceObligationAction{1},
+                    observation,
+                    profile),
+                AgentEconomicConstraintResult::Allowed);
+            EXPECT_EQ(
+                evaluate(
+                    SettlePaymentObligationAction{1},
+                    observation,
+                    profile),
+                AgentEconomicConstraintResult::Allowed);
         }
 
         TEST(AgentEconomicConstraintsTest,

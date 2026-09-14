@@ -5,7 +5,9 @@
 #include "accounting/ledger.hpp"
 #include "accounting/order_reservation_store.hpp"
 #include "durability/execution_wal.hpp"
-#include "execution/execution_command_applier.hpp"
+#include "execution/contract_command_applier.hpp"
+#include "execution/contract_sequencer.hpp"
+#include "execution/trading_command_applier.hpp"
 #include "execution/execution_sequencer.hpp"
 #include "matching/event_collector.hpp"
 #include "matching/matching_engine.hpp"
@@ -20,7 +22,9 @@ namespace exchange {
         StateNotFresh,
         WalPrefixMismatch,
         ExecutionIdentityMismatch,
+        ContractIdentityMismatch,
         CommandApplication,
+        ContractInvariant,
         LedgerInvariant,
         ReservationInvariant,
         StaleEvents,
@@ -45,6 +49,7 @@ namespace exchange {
         std::size_t records_replayed{};
         std::size_t submit_attempts{};
         AssignedOrderIdentity next_execution_identity;
+        ContractId next_contract_id{};
     };
 
     class ExecutionRecovery {
@@ -57,7 +62,10 @@ namespace exchange {
             EventCollector& events,
             Ledger& ledger,
             ExecutionSequencer& sequencer,
-            ExecutionCommandApplier& command_applier) noexcept;
+            TradingCommandApplier& command_applier,
+            ContractStore& contracts,
+            ContractSequencer& contract_sequencer,
+            ContractCommandApplier& contract_command_applier) noexcept;
 
         [[nodiscard]] ExecutionRecoverySummary recover(
             std::span<const WalRecord> records,
@@ -77,6 +85,9 @@ namespace exchange {
         EventCollector& events_;
         Ledger& ledger_;
         ExecutionSequencer& sequencer_;
-        ExecutionCommandApplier& command_applier_;
+        TradingCommandApplier& command_applier_;
+        ContractStore& contracts_;
+        ContractSequencer& contract_sequencer_;
+        ContractCommandApplier& contract_command_applier_;
     };
 }  // namespace exchange

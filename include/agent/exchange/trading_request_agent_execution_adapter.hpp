@@ -2,6 +2,7 @@
 
 #include "agent/domain/agent_registry.hpp"
 #include "agent/exchange/agent_execution_adapter.hpp"
+#include "execution/contract_request_executor.hpp"
 #include "execution/trading_request_executor.hpp"
 
 namespace exchange {
@@ -11,6 +12,7 @@ namespace exchange {
         TradingRequestAgentExecutionAdapter(
             const AgentRegistry& registry,
             TradingRequestExecutor& executor,
+            ContractRequestExecutor& contract_executor,
             RequestId first_request_id = 1);
 
         TradingRequestAgentExecutionAdapter(
@@ -27,6 +29,7 @@ namespace exchange {
 
         const AgentRegistry& registry_;
         TradingRequestExecutor& executor_;
+        ContractRequestExecutor& contract_executor_;
         RequestId next_request_id_;
     };
 }  // namespace exchange

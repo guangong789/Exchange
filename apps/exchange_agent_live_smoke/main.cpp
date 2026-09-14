@@ -159,6 +159,31 @@ namespace {
                                          Action,
                                          exchange::CancelOrderAction>) {
                     output << "cancel order_id=" << value.order_id;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         exchange::ProposeContractAction>) {
+                    output << "propose_contract counterparty="
+                           << value.counterparty;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         exchange::AcceptContractAction>) {
+                    output << "accept_contract contract_id="
+                           << value.contract_id;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         exchange::RejectContractAction>) {
+                    output << "reject_contract contract_id="
+                           << value.contract_id;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         exchange::FulfillResourceObligationAction>) {
+                    output << "fulfill_resource_obligation contract_id="
+                           << value.contract_id;
+                } else if constexpr (std::is_same_v<
+                                         Action,
+                                         exchange::SettlePaymentObligationAction>) {
+                    output << "settle_payment_obligation contract_id="
+                           << value.contract_id;
                 } else {
                     output << "hold";
                 }
@@ -180,6 +205,18 @@ namespace {
                 return "cancel_target_not_active";
             case Result::InvalidFinancialValue:
                 return "invalid_financial_value";
+            case Result::InvalidContractCounterparty:
+                return "invalid_contract_counterparty";
+            case Result::InvalidContractParties:
+                return "invalid_contract_parties";
+            case Result::InvalidContractPayment:
+                return "invalid_contract_payment";
+            case Result::InvalidContractResource:
+                return "invalid_contract_resource";
+            case Result::InvalidContractQuantity:
+                return "invalid_contract_quantity";
+            case Result::InvalidContractId:
+                return "invalid_contract_id";
         }
         throw std::logic_error("Unknown structural validation result");
     }
@@ -227,6 +264,23 @@ namespace {
         throw std::logic_error("Unknown cancel result");
     }
 
+    std::string_view contract_status_name(exchange::ContractResult status) {
+        using Status = exchange::ContractResult;
+        switch (status) {
+            case Status::Success: return "success";
+            case Status::ContractNotFound: return "contract_not_found";
+            case Status::InvalidTerms: return "invalid_terms";
+            case Status::InvalidTransition: return "invalid_transition";
+            case Status::UnauthorizedActor: return "unauthorized_actor";
+            case Status::AccountNotFound: return "account_not_found";
+            case Status::InsufficientFunds: return "insufficient_funds";
+            case Status::BalanceOverflow: return "balance_overflow";
+            case Status::ContractIdExhausted:
+                return "contract_id_exhausted";
+        }
+        throw std::logic_error("Unknown contract result");
+    }
+
     std::string format_execution(
         const std::optional<exchange::AgentActionResult>& result) {
         if (!result.has_value()) {
@@ -250,6 +304,14 @@ namespace {
                                          exchange::CancelActionResult>) {
                     output << "cancel status="
                            << cancel_status_name(value.status);
+                } else if constexpr (std::is_same_v<
+                                         Result,
+                                         exchange::ContractActionResult>) {
+                    output << "contract status="
+                           << contract_status_name(value.status);
+                    if (value.contract_id.has_value()) {
+                        output << " contract_id=" << *value.contract_id;
+                    }
                 } else {
                     output << "hold";
                 }
@@ -423,19 +485,21 @@ namespace {
                       << *liquidity.assigned_order_id
                       << " price=100 quantity=5\n";
 
-            exchange::AgentRegistry registry;
-            if (!registry.register_agent({agent_id, account_id})) {
+            if (!runtime->agent_registry().register_agent(
+                    {agent_id, account_id})) {
                 throw std::logic_error("Failed to register smoke Agent");
             }
             exchange::AgentObservationService observations{
-                registry,
+                runtime->agent_registry(),
                 runtime_view.accounts(),
                 runtime->reservations(),
                 runtime->order_book(),
+                runtime->contracts(),
                 instrument};
             exchange::TradingRequestAgentExecutionAdapter execution{
-                registry,
+                runtime->agent_registry(),
                 runtime->executor(),
+                runtime->contract_executor(),
                 2};
 
             exchange::AgentEconomicProfile profile;
@@ -527,11 +591,16 @@ namespace {
                                           Command,
                                           exchange::SubmitExecutionCommand>) {
                             ++durable_submits;
-                        } else {
+                            if (command.account_id == account_id) {
+                                ++agent_wal_records;
+                            }
+                        } else if constexpr (std::is_same_v<
+                                                 Command,
+                                                 exchange::CancelExecutionCommand>) {
                             ++durable_cancels;
-                        }
-                        if (command.account_id == account_id) {
-                            ++agent_wal_records;
+                            if (command.account_id == account_id) {
+                                ++agent_wal_records;
+                            }
                         }
                     },
                     record.command);

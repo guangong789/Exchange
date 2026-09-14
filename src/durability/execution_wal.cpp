@@ -11,10 +11,15 @@ namespace exchange {
     namespace {
         constexpr std::array<std::uint8_t, 8> file_magic{
             'E', 'X', 'W', 'A', 'L', '0', '0', '1'};
-        constexpr std::uint16_t file_version = 2;
+        constexpr std::uint16_t file_version = 3;
         constexpr std::uint16_t record_version = 1;
         constexpr std::uint8_t submit_record_type = 1;
         constexpr std::uint8_t cancel_record_type = 2;
+        constexpr std::uint8_t create_contract_record_type = 3;
+        constexpr std::uint8_t accept_contract_record_type = 4;
+        constexpr std::uint8_t reject_contract_record_type = 5;
+        constexpr std::uint8_t fulfill_resource_record_type = 6;
+        constexpr std::uint8_t settle_payment_record_type = 7;
         constexpr std::uint8_t record_flags = 0;
         constexpr std::size_t record_prefix_size = 16;
         constexpr std::size_t checksum_size = 4;
@@ -112,6 +117,50 @@ namespace exchange {
                 && cancel.order_id != 0;
         }
 
+        bool is_valid_contract_terms(
+            AgentId proposer,
+            AgentId counterparty,
+            const ContractTerms& terms) {
+            return proposer != 0 && counterparty != 0
+                && proposer != counterparty
+                && terms.payer != 0 && terms.payee != 0
+                && terms.payer != terms.payee
+                && terms.quote_payment_amount > 0
+                && terms.resource == ResourceKind::ComputeCredit
+                && terms.resource_quantity > 0
+                && ((terms.payer == proposer
+                     && terms.payee == counterparty)
+                    || (terms.payer == counterparty
+                        && terms.payee == proposer));
+        }
+
+        bool is_valid_create_contract(
+            const CreateContractExecutionCommand& create) {
+            return create.contract_id != 0
+                && create.contract_id
+                    != std::numeric_limits<ContractId>::max()
+                && is_valid_contract_terms(
+                    create.proposer,
+                    create.counterparty,
+                    create.terms);
+        }
+
+        template <typename Command>
+        bool is_valid_contract_transition(const Command& command) {
+            return command.contract_id != 0
+                && command.contract_id
+                    != std::numeric_limits<ContractId>::max()
+                && command.acting_agent != 0;
+        }
+
+        bool is_valid_settlement(
+            const SettlePaymentObligationExecutionCommand& command) {
+            return is_valid_contract_transition(command)
+                && command.payer_account_id != 0
+                && command.payee_account_id != 0
+                && command.payer_account_id != command.payee_account_id;
+        }
+
         bool is_valid_command(
             const ExecutionCommand& command,
             const InstrumentContext& instrument) {
@@ -122,8 +171,20 @@ namespace exchange {
                                       Command,
                                       SubmitExecutionCommand>) {
                         return is_valid_submit(payload, instrument);
-                    } else {
+                    } else if constexpr (std::is_same_v<
+                                             Command,
+                                             CancelExecutionCommand>) {
                         return is_valid_cancel(payload);
+                    } else if constexpr (std::is_same_v<
+                                             Command,
+                                             CreateContractExecutionCommand>) {
+                        return is_valid_create_contract(payload);
+                    } else if constexpr (std::is_same_v<
+                                             Command,
+                                             SettlePaymentObligationExecutionCommand>) {
+                        return is_valid_settlement(payload);
+                    } else {
+                        return is_valid_contract_transition(payload);
                     }
                 },
                 command);
@@ -151,7 +212,7 @@ namespace exchange {
             std::size_t offset = 0;
             const std::uint32_t encoded_length =
                 read_little_endian<std::uint32_t>(bytes, offset);
-            if (encoded_length < kWalCancelRecordEncodedSize) {
+            if (encoded_length < kWalContractTransitionRecordEncodedSize) {
                 return WalError::InvalidRecordLength;
             }
             if (encoded_length > kMaxWalRecordEncodedSize) {
@@ -178,7 +239,12 @@ namespace exchange {
                 return WalError::UnsupportedRecordVersion;
             }
             type = read_little_endian<std::uint8_t>(bytes, offset);
-            if (type != submit_record_type && type != cancel_record_type) {
+            if (type != submit_record_type && type != cancel_record_type
+                && type != create_contract_record_type
+                && type != accept_contract_record_type
+                && type != reject_contract_record_type
+                && type != fulfill_resource_record_type
+                && type != settle_payment_record_type) {
                 return WalError::UnknownRecordType;
             }
             if (read_little_endian<std::uint8_t>(bytes, offset)
@@ -186,9 +252,23 @@ namespace exchange {
                 return WalError::InvalidRecordFlags;
             }
 
-            const std::size_t expected_size = type == submit_record_type
-                ? kWalSubmitRecordEncodedSize
-                : kWalCancelRecordEncodedSize;
+            const std::size_t expected_size = [&] {
+                switch (type) {
+                    case submit_record_type:
+                        return kWalSubmitRecordEncodedSize;
+                    case cancel_record_type:
+                        return kWalCancelRecordEncodedSize;
+                    case create_contract_record_type:
+                        return kWalCreateContractRecordEncodedSize;
+                    case accept_contract_record_type:
+                    case reject_contract_record_type:
+                    case fulfill_resource_record_type:
+                        return kWalContractTransitionRecordEncodedSize;
+                    case settle_payment_record_type:
+                        return kWalSettlePaymentRecordEncodedSize;
+                }
+                return std::size_t{0};
+            }();
             if (bytes.size() != expected_size) {
                 return WalError::UnexpectedPayloadSize;
             }
@@ -302,7 +382,9 @@ namespace exchange {
                         static_cast<std::uint8_t>(payload.order.side));
                     append_little_endian(bytes, payload.order.price);
                     append_little_endian(bytes, payload.order.quantity);
-                } else {
+                } else if constexpr (std::is_same_v<
+                                         Command,
+                                         CancelExecutionCommand>) {
                     bytes.reserve(kWalCancelRecordEncodedSize);
                     append_record_prefix(
                         bytes,
@@ -312,6 +394,71 @@ namespace exchange {
                     append_little_endian(bytes, payload.request_id);
                     append_little_endian(bytes, payload.account_id);
                     append_little_endian(bytes, payload.order_id);
+                } else if constexpr (std::is_same_v<
+                                         Command,
+                                         CreateContractExecutionCommand>) {
+                    bytes.reserve(kWalCreateContractRecordEncodedSize);
+                    append_record_prefix(
+                        bytes,
+                        kWalCreateContractRecordEncodedSize,
+                        create_contract_record_type,
+                        record.sequence);
+                    append_little_endian(bytes, payload.contract_id);
+                    append_little_endian(bytes, payload.proposer);
+                    append_little_endian(bytes, payload.counterparty);
+                    append_little_endian(bytes, payload.terms.payer);
+                    append_little_endian(bytes, payload.terms.payee);
+                    append_little_endian(
+                        bytes,
+                        payload.terms.quote_payment_amount);
+                    append_little_endian(
+                        bytes,
+                        static_cast<std::uint8_t>(payload.terms.resource));
+                    append_little_endian(
+                        bytes,
+                        payload.terms.resource_quantity);
+                } else if constexpr (std::is_same_v<
+                                         Command,
+                                         SettlePaymentObligationExecutionCommand>) {
+                    bytes.reserve(kWalSettlePaymentRecordEncodedSize);
+                    append_record_prefix(
+                        bytes,
+                        kWalSettlePaymentRecordEncodedSize,
+                        settle_payment_record_type,
+                        record.sequence);
+                    append_little_endian(bytes, payload.contract_id);
+                    append_little_endian(bytes, payload.acting_agent);
+                    append_little_endian(bytes, payload.payer_account_id);
+                    append_little_endian(bytes, payload.payee_account_id);
+                } else {
+                    constexpr std::uint8_t type = [] {
+                        if constexpr (std::is_same_v<
+                                          Command,
+                                          AcceptContractExecutionCommand>) {
+                            return accept_contract_record_type;
+                        } else if constexpr (std::is_same_v<
+                                                 Command,
+                                                 RejectContractExecutionCommand>) {
+                            return reject_contract_record_type;
+                        } else if constexpr (std::is_same_v<
+                                                 Command,
+                                                 FulfillResourceObligationExecutionCommand>) {
+                            return fulfill_resource_record_type;
+                        } else {
+                            static_assert(std::is_same_v<
+                                          Command,
+                                          FulfillResourceObligationExecutionCommand>);
+                            return fulfill_resource_record_type;
+                        }
+                    }();
+                    bytes.reserve(kWalContractTransitionRecordEncodedSize);
+                    append_record_prefix(
+                        bytes,
+                        kWalContractTransitionRecordEncodedSize,
+                        type,
+                        record.sequence);
+                    append_little_endian(bytes, payload.contract_id);
+                    append_little_endian(bytes, payload.acting_agent);
                 }
             },
             record.command);
@@ -342,11 +489,11 @@ namespace exchange {
         }
 
         ExecutionCommand command = [&]() -> ExecutionCommand {
-            const RequestId request_id =
-                read_little_endian<RequestId>(bytes, offset);
-            const AccountId account_id =
-                read_little_endian<AccountId>(bytes, offset);
             if (type == submit_record_type) {
+                const RequestId request_id =
+                    read_little_endian<RequestId>(bytes, offset);
+                const AccountId account_id =
+                    read_little_endian<AccountId>(bytes, offset);
                 const OrderId order_id =
                     read_little_endian<OrderId>(bytes, offset);
                 const Timestamp timestamp =
@@ -368,10 +515,68 @@ namespace exchange {
                         quantity,
                         timestamp}};
             }
-            return CancelExecutionCommand{
-                request_id,
-                account_id,
-                read_little_endian<OrderId>(bytes, offset)};
+            if (type == cancel_record_type) {
+                return CancelExecutionCommand{
+                    read_little_endian<RequestId>(bytes, offset),
+                    read_little_endian<AccountId>(bytes, offset),
+                    read_little_endian<OrderId>(bytes, offset)};
+            }
+            if (type == create_contract_record_type) {
+                const ContractId contract_id =
+                    read_little_endian<ContractId>(bytes, offset);
+                const AgentId proposer =
+                    read_little_endian<AgentId>(bytes, offset);
+                const AgentId counterparty =
+                    read_little_endian<AgentId>(bytes, offset);
+                const AgentId payer =
+                    read_little_endian<AgentId>(bytes, offset);
+                const AgentId payee =
+                    read_little_endian<AgentId>(bytes, offset);
+                const Amount payment =
+                    read_little_endian<Amount>(bytes, offset);
+                const ResourceKind resource = static_cast<ResourceKind>(
+                    read_little_endian<std::uint8_t>(bytes, offset));
+                const ResourceQuantity quantity =
+                    read_little_endian<ResourceQuantity>(bytes, offset);
+                return CreateContractExecutionCommand{
+                    contract_id,
+                    proposer,
+                    counterparty,
+                    ContractTerms{
+                        payer,
+                        payee,
+                        payment,
+                        resource,
+                        quantity}};
+            }
+
+            const ContractId contract_id =
+                read_little_endian<ContractId>(bytes, offset);
+            const AgentId acting_agent =
+                read_little_endian<AgentId>(bytes, offset);
+            switch (type) {
+                case accept_contract_record_type:
+                    return AcceptContractExecutionCommand{
+                        contract_id,
+                        acting_agent};
+                case reject_contract_record_type:
+                    return RejectContractExecutionCommand{
+                        contract_id,
+                        acting_agent};
+                case fulfill_resource_record_type:
+                    return FulfillResourceObligationExecutionCommand{
+                        contract_id,
+                        acting_agent};
+                case settle_payment_record_type:
+                    return SettlePaymentObligationExecutionCommand{
+                        contract_id,
+                        acting_agent,
+                        read_little_endian<AccountId>(bytes, offset),
+                        read_little_endian<AccountId>(bytes, offset)};
+                default:
+                    throw std::logic_error(
+                        "validated WAL record has unknown command type");
+            }
         }();
         if (!is_valid_command(command, instrument)) {
             return WalError::InvalidValue;
@@ -434,7 +639,7 @@ namespace exchange {
             std::size_t length_offset = offset;
             const std::uint32_t record_length =
                 read_little_endian<std::uint32_t>(bytes, length_offset);
-            if (record_length < kWalCancelRecordEncodedSize) {
+            if (record_length < kWalContractTransitionRecordEncodedSize) {
                 result.status = WalScanStatus::Error;
                 result.error = WalError::InvalidRecordLength;
                 return result;

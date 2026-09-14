@@ -32,7 +32,10 @@ namespace exchange {
         EventCollector& events,
         Ledger& ledger,
         ExecutionSequencer& sequencer,
-        ExecutionCommandApplier& command_applier) noexcept
+        TradingCommandApplier& command_applier,
+        ContractStore& contracts,
+        ContractSequencer& contract_sequencer,
+        ContractCommandApplier& contract_command_applier) noexcept
         : instrument_(instrument),
           accounts_(accounts),
           reservations_(reservations),
@@ -40,7 +43,10 @@ namespace exchange {
           events_(events),
           ledger_(ledger),
           sequencer_(sequencer),
-          command_applier_(command_applier) {}
+          command_applier_(command_applier),
+          contracts_(contracts),
+          contract_sequencer_(contract_sequencer),
+          contract_command_applier_(contract_command_applier) {}
 
     ExecutionRecoverySummary ExecutionRecovery::recover(
         std::span<const WalRecord> records,
@@ -92,9 +98,29 @@ namespace exchange {
                 }
                 ++submit_attempts;
             }
+            if (const auto* create =
+                    std::get_if<CreateContractExecutionCommand>(
+                        &record.command)) {
+                if (!contract_sequencer_.advance_recovered_id(
+                        create->contract_id)) {
+                    throw ExecutionRecoveryException{
+                        ExecutionRecoveryFailure::ContractIdentityMismatch,
+                        record.sequence,
+                        "recorded ContractId does not match sequencer"};
+                }
+            }
 
             try {
-                static_cast<void>(command_applier_.apply(record.command));
+                if (std::holds_alternative<SubmitExecutionCommand>(
+                        record.command)
+                    || std::holds_alternative<CancelExecutionCommand>(
+                        record.command)) {
+                    static_cast<void>(command_applier_.apply(record.command));
+                } else if (contract_command_applier_.apply(record.command)
+                           != ContractResult::Success) {
+                    throw std::logic_error(
+                        "durable contract command replay was rejected");
+                }
             } catch (...) {
                 events_.clear();
                 std::throw_with_nested(ExecutionRecoveryException{
@@ -116,7 +142,8 @@ namespace exchange {
         return ExecutionRecoverySummary{
             records.size(),
             submit_attempts,
-            sequencer_.next_identity()};
+            sequencer_.next_identity(),
+            contract_sequencer_.next_id()};
     }
 
     void ExecutionRecovery::verify_fresh_state() const {
@@ -136,6 +163,8 @@ namespace exchange {
             || !reservations_.entries().empty()
             || !ledger_.entries().empty()
             || !events_.events().empty()
+            || contracts_.size() != 0
+            || contract_sequencer_.next_id() != 1
             || sequencer_.next_identity()
                 != AssignedOrderIdentity{1, 1}) {
             throw ExecutionRecoveryException{
@@ -259,6 +288,12 @@ namespace exchange {
                 ExecutionRecoveryFailure::StaleEvents,
                 last_sequence,
                 "recovery left stale matching events"};
+        }
+        if (!contracts_.invariants_hold()) {
+            throw ExecutionRecoveryException{
+                ExecutionRecoveryFailure::ContractInvariant,
+                last_sequence,
+                "recovered contract state violates invariants"};
         }
     }
 }  // namespace exchange

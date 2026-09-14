@@ -1,5 +1,6 @@
 #include "agent/runtime/agent_experiment.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -99,6 +100,7 @@ namespace exchange {
                 "Agent utility evaluation has no delta");
         }
 
+        bool is_contract_action = false;
         if (turn.action.has_value()) {
             std::visit(
                 [&](const auto& action) {
@@ -127,11 +129,67 @@ namespace exchange {
                                              Action,
                                              CancelOrderAction>) {
                         increment(metrics.proposed_cancels);
+                    } else if constexpr (std::is_same_v<
+                                             Action,
+                                             ProposeContractAction>) {
+                        increment(metrics.contract_proposals);
+                        is_contract_action = true;
+                    } else if constexpr (std::is_same_v<
+                                             Action,
+                                             AcceptContractAction>) {
+                        increment(metrics.contract_accepts);
+                        is_contract_action = true;
+                    } else if constexpr (std::is_same_v<
+                                             Action,
+                                             RejectContractAction>) {
+                        increment(metrics.contract_rejects);
+                        is_contract_action = true;
+                    } else if constexpr (std::is_same_v<
+                                             Action,
+                                             FulfillResourceObligationAction>) {
+                        increment(metrics.contract_fulfillment_attempts);
+                        is_contract_action = true;
+                    } else if constexpr (std::is_same_v<
+                                             Action,
+                                             SettlePaymentObligationAction>) {
+                        increment(metrics.contract_settlement_attempts);
+                        is_contract_action = true;
                     } else {
+                        static_assert(std::is_same_v<Action, HoldAction>);
                         increment(metrics.holds);
                     }
                 },
                 *turn.action);
+
+            if (const auto* proposal = std::get_if<ProposeContractAction>(
+                    &*turn.action);
+                proposal != nullptr && turn.agent_id != 0
+                && proposal->counterparty != 0
+                && proposal->counterparty != turn.agent_id) {
+                increment(contract_pair_interactions_[
+                    {turn.agent_id, proposal->counterparty}]
+                              .proposal_attempts);
+            }
+            if (const auto* acceptance = std::get_if<AcceptContractAction>(
+                    &*turn.action);
+                acceptance != nullptr && turn.execution_result.has_value()) {
+                const auto* result = std::get_if<ContractActionResult>(
+                    &*turn.execution_result);
+                if (result != nullptr
+                    && result->status == ContractResult::Success) {
+                    const auto contract = std::find_if(
+                        turn.observation.contracts.begin(),
+                        turn.observation.contracts.end(),
+                        [acceptance](const Contract& contract) {
+                            return contract.id == acceptance->contract_id;
+                        });
+                    if (contract != turn.observation.contracts.end()) {
+                        increment(contract_pair_interactions_[
+                            {contract->proposer, contract->counterparty}]
+                                      .accepted_contracts);
+                    }
+                }
+            }
         }
 
         switch (turn.status) {
@@ -146,9 +204,37 @@ namespace exchange {
                 break;
             case AgentTurnStatus::ExecutionRejected:
                 increment(metrics.execution_rejections);
+                if (is_contract_action) {
+                    increment(metrics.contract_execution_rejections);
+                    if (turn.action.has_value()
+                        && std::holds_alternative<
+                            FulfillResourceObligationAction>(*turn.action)) {
+                        increment(
+                            metrics.contract_fulfillment_rejections);
+                    }
+                    if (turn.action.has_value()
+                        && std::holds_alternative<
+                            SettlePaymentObligationAction>(*turn.action)) {
+                        increment(metrics.contract_settlement_rejections);
+                    }
+                }
                 break;
             case AgentTurnStatus::Executed:
                 increment(metrics.successful_executions);
+                if (is_contract_action) {
+                    increment(metrics.successful_contract_actions);
+                    if (turn.action.has_value()
+                        && std::holds_alternative<
+                            FulfillResourceObligationAction>(*turn.action)) {
+                        increment(
+                            metrics.successful_contract_fulfillments);
+                    }
+                    if (turn.action.has_value()
+                        && std::holds_alternative<
+                            SettlePaymentObligationAction>(*turn.action)) {
+                        increment(metrics.successful_contract_settlements);
+                    }
+                }
                 break;
             case AgentTurnStatus::Held:
                 break;
@@ -162,8 +248,15 @@ namespace exchange {
     }
 
     const std::map<AgentId, PerAgentExperimentMetrics>&
-        AgentExperimentMetrics::per_agent() const noexcept {
+    AgentExperimentMetrics::per_agent() const noexcept {
         return per_agent_;
+    }
+
+    const std::map<
+        std::pair<AgentId, AgentId>,
+        ContractPairInteractionMetrics>&
+    AgentExperimentMetrics::contract_pair_interactions() const noexcept {
+        return contract_pair_interactions_;
     }
 
     SocietyExperimentMetrics AgentExperimentMetrics::society() const {
@@ -185,6 +278,39 @@ namespace exchange {
                 agent.execution_rejections);
             add_counter(result.total_buys, agent.proposed_buys);
             add_counter(result.total_sells, agent.proposed_sells);
+            add_counter(
+                result.total_contract_proposals,
+                agent.contract_proposals);
+            add_counter(
+                result.total_contract_accepts,
+                agent.contract_accepts);
+            add_counter(
+                result.total_contract_rejects,
+                agent.contract_rejects);
+            add_counter(
+                result.total_contract_fulfillment_attempts,
+                agent.contract_fulfillment_attempts);
+            add_counter(
+                result.total_successful_contract_fulfillments,
+                agent.successful_contract_fulfillments);
+            add_counter(
+                result.total_contract_fulfillment_rejections,
+                agent.contract_fulfillment_rejections);
+            add_counter(
+                result.total_contract_settlement_attempts,
+                agent.contract_settlement_attempts);
+            add_counter(
+                result.total_successful_contract_settlements,
+                agent.successful_contract_settlements);
+            add_counter(
+                result.total_contract_settlement_rejections,
+                agent.contract_settlement_rejections);
+            add_counter(
+                result.total_successful_contract_actions,
+                agent.successful_contract_actions);
+            add_counter(
+                result.total_contract_execution_rejections,
+                agent.contract_execution_rejections);
             add_counter(result.total_holds, agent.holds);
         }
         return result;
