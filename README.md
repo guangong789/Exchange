@@ -1,5 +1,7 @@
 # Deterministic Agent Execution Runtime
 
+简体中文 | [English](README-EN.md)
+
 一个 C++20 确定性执行 runtime：将概率性或脚本化的 Agent 意图转换为 typed action，经结构校验与经济约束后执行内部交易、持久化双边合约和内部结算。系统使用精确整数记账、同步 WAL 与崩溃恢复，重建订单、余额、预留、合约和 Ledger。
 
 **Agent 可以提出动作，但不能通过 Agent 接口直接修改权威财务状态。** 模型输出是建议；准入、执行顺序与经济后果由 runtime 决定。项目面向系统工程学习与作品展示。
