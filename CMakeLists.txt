@@ -118,6 +118,16 @@ else()
     target_compile_options(exchange_agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(exchange_runtime_demo
+        apps/exchange_runtime_demo/main.cpp
+    )
+    target_link_libraries(exchange_runtime_demo PRIVATE exchange::agent)
+    target_compile_features(exchange_runtime_demo PRIVATE cxx_std_20)
+    target_compile_options(exchange_runtime_demo
+        PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(EXCHANGE_BUILD_BINANCE_ALPHA_FEED)
     find_package(CURL REQUIRED)
     find_package(nlohmann_json CONFIG REQUIRED)

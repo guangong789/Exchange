@@ -1,176 +1,191 @@
-# Agent Economy Exchange
+# Deterministic Agent Execution Runtime
 
-本项目以已有的 C++ Exchange core 为确定性经济基础，在其上组合 Analyst、Risk 与 Trader Agent；撮合与记账规则决定最终经济状态，Binance/x402 提供外部支付能力边界。**Agent 决策不直接成为经济事实。**
+一个 C++20 确定性执行 runtime：将概率性或脚本化的 Agent 意图转换为 typed action，经结构校验与经济约束后执行内部交易、持久化双边合约和内部结算。系统使用精确整数记账、同步 WAL 与崩溃恢复，重建订单、余额、预留、合约和 Ledger。
 
-## 1. 这个项目是什么？为什么用自己的 Exchange core 作为 Agent 项目的基础？
+**Agent 可以提出动作，但不能通过 Agent 接口直接修改权威财务状态。** 模型输出是建议；准入、执行顺序与经济后果由 runtime 决定。项目面向系统工程学习与作品展示。
 
-项目最初是一套 C++20 确定性撮合与记账核心，Agent、模型、支付和 UI 都是后来加入的组合层。MatchingEngine、ExecutionCoordinator、AccountStore 与 Ledger 不感知 DeepSeek、Binance Agentic Wallet 或前端。
+## Core Guarantees
 
-会产生经济变更的 Agent action 必须经过经济校验；订单类 action 还需要经过资金预留与撮合，才能形成可 Replay 的经济结果。BUY、SELL 与 CANCEL 受资金和市场规则约束；HOLD 是一等 action，但不会产生经济状态变更。
+- **显式执行顺序**：TCP gateway 使用 epoll 并发 I/O、有界命令/响应队列和单执行线程；AgentRuntime 顺序执行回合。二者复用交易执行边界，直接组合 runtime 的调用者负责串行调用，接口不提供任意并发写入保证。
+- **Typed Agent 边界**：动作先经过结构校验和配置的硬经济约束，再通过 adapter 进入执行器；策略不能直接写账户、撮合或 Ledger。
+- **精确交易与记账**：价格、数量与资产余额使用整数及受检换算；账户支持的订单按价格/时间优先撮合，买单预留 quote、卖单预留 base，撤单验证所有权并释放剩余预留。
+- **内部合约结算**：验证生命周期、参与方与可用资金，通过现有执行路径转移内部 quote，并记录 Ledger settlement metadata。
+- **WAL-before-apply**：durable runtime 同步 journal 后才应用权威状态；交易和合约命令共享 WAL 顺序。
+- **确定性恢复与显式失败**：相同 bootstrap 与有效 WAL 重建经济状态；校验配置指纹、记录版本、校验和与序列。截断不完整尾记录，完整记录损坏则拒绝启动；journal 或意外 apply 失败会 poison runtime。
 
-当前实现是单机、内存内的工程项目，不是生产级交易所，也不提供持久化、灾难恢复或 ACID 保证。移除 `demo-ui/`、DeepSeek、x402 与 Binance 后，**确定性经济核心仍可独立构建和测试。**
+保证由 [交易执行测试](tests/execution/trading_request_executor_test.cpp)、[Agent 耐久测试](tests/agent/exchange/durable_agent_execution_test.cpp)、[合约耐久测试](tests/durability/durable_contract_execution_test.cpp) 和 [恢复测试](tests/durability/execution_recovery_test.cpp) 覆盖。非持久化构造路径仍用于测试与基准；本页主 demo 和 server 使用 durable runtime。
 
-## 2. 三个 Agent 怎么协作？x402 和 Binance Agentic Wallet 在这里做什么？
+## 架构与信任边界
 
-### 权限与职责边界
-
-- **Analyst Agent**：提供市场信号与服务信息。
-- **Risk Agent**：根据资金、盘口、风险预算与目标给出确定性数量上限。
-- **Trader Agent · DeepSeek**：拥有最终 action 决策权。
-- **ExecutionCoordinator**：决定 action 能否成为经济事实。
-
-Analyst 提供信息，Risk 提供约束，Trader 决策，经济核心执行或拒绝：Analyst → Risk → Trader · DeepSeek → AgentAction → 确定性经济核心。
-
-当前多轮场景中，Analyst 给出 BUY_BASE，Risk 上限随余额、盘口与目标变化；Trader 可以 BUY 或合法地 HOLD，上一轮经济结果会进入下一轮观察状态。
-
-### 两条 x402 路径
-
-Society Simulation 使用确定性的 PreviewAuthorized 保持多轮场景可重复，不执行链上结算。
-
-**x402 已经到达 Binance Agentic Wallet 的支付预览边界。** Live x402 Evidence 是独立、可选的外部集成：后端构造 BSC（eip155:56）上的 USDT/Tether USD 支付要求，调用 Wallet CLI 并规范化 Provider 返回。
-
-当前 Provider 返回：
-
-- Wallet CONNECTED · Provider binance-agentic-wallet
-- Preview **ACTION_REQUIRED** · Reason **INSUFFICIENT_BALANCE**
-- BSC / eip155:56 · USDT 10000 原子单位 · 资金移动 0
-
-**Settlement 未执行。** 当前没有签名、广播或资金转移，服务保持 locked。
-
-## 3. 为什么不能让 Agent 直接改余额？Matching / Accounting / Ledger 有什么价值？
-
-经济执行链路是：AgentAction → AgentActionGateway → ExecutionCoordinator → MatchingEngine → Account / Reservation / Ledger。
-
-**所有可执行订单都有对应的账户资金支持。** 买单预留 quote，卖单预留 base；Price-Time Priority 决定 maker，并以挂单价格生成 Trade。ExecutionCoordinator 协调订单准入、资金预留、余额变更与 Ledger。
-
-部分成交直接体现请求数量与成交数量的区别：
-
-```text
-BUY 2 @ 101
-→ executed 1 @ 101
-→ remaining BUY 1 @ 101 rests
-→ 101 QUOTE remains reserved
+```mermaid
+flowchart TD
+    P[Scripted Policy / optional LLM] --> A[Typed AgentAction]
+    A --> V[Agent 结构校验与经济约束]
+    V --> X[Agent execution adapter]
+    T[TCP Client] --> G[epoll / parser / bounded queues]
+    G --> Q[单执行线程]
+    Q --> R[Trading request admission]
+    X --> R
+    X --> C[Contract lifecycle / funds preflight]
+    R --> W[同步 WAL append + fdatasync]
+    C --> W
+    W --> E[Apply: Trading / Contracts / Internal Settlement]
+    E --> S[Accounts / Reservations / OrderBook / Contracts / Ledger]
+    E --> O[Execution response]
+    W --> B[重启: 验证 bootstrap + WAL / replay]
+    B --> S
+    subgraph Optional[可选集成与实验]
+        D[DeepSeek] -.-> P
+        M[Binance Alpha 公共行情] -.-> Obs[Observation context]
+        Obs -.-> P
+        Soc[有界 Society 实验] -.-> P
+    end
 ```
 
-**部分成交后，剩余资金继续处于 reserved 状态。** Trade 记录实际成交，剩余挂单仍由对应预留资金支持。
+Agent 经济约束属于 AgentRuntime 的回合流程；TCP 交易请求使用账户感知的交易准入与业务校验，不自动获得 Agent profile 约束。合约目前通过 Agent/direct runtime 接口执行，TCP 协议仅支持交易请求。
 
-当前 episode 证据：
+## Demo A：本地确定性演示
 
-- 执行：4 张 taker order · 4 条 Trade · 成交 5 BASE
-- 资金：执行 507 QUOTE · 预留 101 QUOTE
-- 审计：15 条 Ledger · 无效状态变更 0
+[exchange_runtime_demo](apps/exchange_runtime_demo/main.cpp) 使用真实生产执行路径、固定脚本动作和真实临时 WAL，不需要外部 API、模型密钥或互联网。程序逐阶段检查结果，不满足预期即失败退出；结束时清理临时 WAL。
 
-Trade 条数不等于成交数量；Ledger 是内存内审计镜像，不是数据库或外部结算系统。
+| 演示阶段 | 可观察结果与不变量 |
+| --- | --- |
+| 1. Valid typed trading actions | 两个 Agent 提交卖单/买单，产生成交、剩余挂单、预留及 Ledger。 |
+| 2. Invalid intent rejection | 买价超过现有 `max_buy_price` 约束；账户、订单、预留、Ledger 和 WAL 保持不变。 |
+| 3. Durable contract lifecycle + internal settlement | `Proposed → Accepted → Fulfilled → Settled`；显示双方身份、ContractId、义务、quote 转账和 Ledger metadata。 |
+| 4. Ambiguous crash window | 子进程通过 durable executor 完成命令后，父进程在业务响应交付前发送 `SIGKILL`；WAL 已有命令，应用未收到成功响应。 |
+| 5. Process restart + recovery | 用相同 bootstrap/WAL 创建全新 runtime，核对恢复的订单、余额、预留、合约与 Ledger；无需恢复 Agent 决策内存。 |
+| 6. Explicit retry semantics | 相同 RequestId 再次提交产生新订单，展示恢复后的 ID 连续性；已结算合约重试返回 `InvalidTransition`，不重复付款。 |
 
-本次 5-round episode 的 Score 为 63。Score 仅用于 Society Simulation 的行为评估，不属于余额、Ledger 或 Replay economic parity。
-
-## 4. Replay 为什么值得单独设计？
-
-**Replay 重建的是经济状态，不是 UI，也不是 DeepSeek 的决策过程。** 它只接收原始 episode 中已进入经济边界的确定性输入。
+输出节选：
 
 ```text
-Original episode
-  DeepSeek + Analyst service + Risk / Agent logic
-                         │
-                         ▼
-           captured deterministic economic inputs
-                         │
-                         ▼
-Replay                   fresh deterministic world
-  DeepSeek calls = 0               │
-  Analyst calls  = 0               ▼
-  x402 / Wallet  = 0      ExecutionCoordinator
-                                  ▼
-                           MatchingEngine
-                                  ▼
-                    Account / Reservation / Ledger
-                                  ▼
-                       exact state comparison
+Result: EconomicConstraintRejected reason=BuyPriceExceeded
+Authoritative state unchanged: true
+Lifecycle: Proposed -> Accepted -> Fulfilled -> Settled
+Business response delivered: false
+Process terminated with SIGKILL.
+Exact expected state recovered: true
+Repeated request_id=40 result=Accepted new_order_id=4
+Settlement retry: contract_id=1 result=InvalidTransition
 ```
 
-**Replay 在 fresh world 中重建相同经济结果。** 当前 episode 有 5 次 DeepSeek 决策、5 次 Analyst 服务访问和 4 个已捕获经济输入；其中一轮是 HOLD，因此发生了 cognition，但没有需要捕获的经济 action。
+## 构建与运行
 
-- DeepSeek calls：5 → 0
-- Analyst service accesses：5 → 0
-- Economic inputs：4 → 4
-
-4 个输入通过同一个 ExecutionCoordinator、MatchingEngine、Account、Reservation 与 Ledger 路径执行：
-
-- Trader BASE 可用余额：5 / 5 · **EXACT**
-- QUOTE 可用 / 预留：532 / 532 · 101 / 101 · **EXACT**
-- Trade / Ledger 条数：4 / 4 · 15 / 15 · **EXACT**
-- Objective：5/5 / 5/5 · **EXACT**
-
-**经济输入不等于模型决策历史。** 外部决策可以具有概率性，但越过经济边界的输入及其后果可以确定性重建；余额、Ledger、订单、Trade 与目标均为 EXACT。
-
-## 5. 这套架构可以如何演进？
-
-### 今天已经实现
-
-- 独立于 Agent 的撮合与记账基础：Price-Time Priority、部分成交、撤单、account-backed 预留、同步清算与 Ledger 审计镜像。
-- Analyst、Risk、Trader 三角色协作；DeepSeek 通过 ModelAdapter 参与 Trader 决策，HOLD 是一等 action。
-- localhost x402 付费服务语义，以及 Binance Agentic Wallet 的可选支付预览证据。
-- 捕获经济输入、重建 fresh world 并精确比较状态的 **Deterministic Replay**。
-- Linux epoll TCP gateway、有界队列、单撮合线程、协议测试与 benchmark 工具。
-
-### 下一步可以自然扩展
-
-该架构可演进为 Agent-to-Agent 服务与信息市场：Agent 购买服务，在私有目标与约束下决策，再由确定性设施约束后果。Wallet-backed Agent、可替换模型 Provider、reputation/contracts、结算适配器与长期运行的 Agent society 均属于后续方向；当前没有自动支付、链上结算或持久化 reputation。
-
-## 架构一览
-
-- `matching/` + `accounting/`：撮合、资金预留、余额与 Ledger
-- `agent/` + `arena/`：Agent 身份、观察、动作与多 Agent 场景
-- `model/`：模型抽象与 DeepSeek 适配
-- `x402/` + `binance/`：付费服务边界与 Binance Agentic Wallet 预览
-- `hackathon/` + `demo-ui/`：Society 场景编排与演示界面
-- `replay/`：确定性经济重建
-- `gateway/`：Linux epoll 网络 I/O、有界队列与单撮合线程
-
-**确定性经济核心不依赖 Agent、DeepSeek、Binance 或 UI。** 上层通过组合扩展能力，外部模型与支付 Provider 的语义不会进入撮合和记账核心。
-
-## 运行演示
-
-完整演示路径面向 Linux / WSL2，需要 C++20 编译器、CMake 3.20+、libcurl 与 nlohmann-json。
+Demo 和 epoll server 面向 Linux / WSL2，需要 C++20 编译器、CMake 3.20+。最小构建显式关闭默认开启的可选 provider，避免要求其依赖：
 
 ```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DEXCHANGE_BUILD_TESTS=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF \
+  -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
 cmake --build build -j
-```
-
-```bash
+./build/exchange_runtime_demo
 ctest --test-dir build --output-on-failure
 ```
 
-```bash
-export DEEPSEEK_API_KEY='<process-local key>'
-python3 demo-ui/server.py --port 8765
-```
+测试默认开启：若未安装 GoogleTest，CMake 会下载 v1.15.2，因此首次配置可能需要网络；构建后的 demo 与默认测试不访问外部服务。
 
-访问 http://127.0.0.1:8765。API key 不应写入仓库、前端代码或测试数据；离线测试不需要该 key。
-
-启用 Live x402 Evidence 前需要：
-
-1. Node.js 20+。
-2. 安装 @binance/agentic-wallet，完成 Wallet 认证。
-3. 确认 baw wallet status --json 返回可用的连接状态。
-4. 让 UI bridge 进程能够找到 baw；必要时设置 EXCHANGE_BINANCE_WALLET_CLI。
+独立交易服务器使用已有固定 bootstrap；选择空闲端口和可写 WAL 路径：
 
 ```bash
-export EXCHANGE_BINANCE_WALLET_CLI="$(command -v baw)"
-python3 demo-ui/server.py --port 8765
+./build/exchange_server 9000 ./build/server.wal
 ```
 
-Live x402 Evidence 是可选外部集成，不属于默认离线测试。`.tools/` 用于本机 CLI 工具并保持未跟踪；Wallet session、token 或凭据不得提交。
+服务器不提供生产级认证或账户管理接口。Demo A 直接组合 runtime，以展示 TCP 协议尚未暴露的合约和状态查询。
 
-## 验证
+## 耐久性、恢复与失败语义
 
-现有 build/ 配置的完整离线测试集：
+Durable 执行的顺序为：
 
 ```text
-428 / 428 tests passed
+validate / admit → append WAL → fdatasync → apply authoritative state → respond
 ```
 
-默认测试集覆盖撮合、记账、Agent/Arena、Replay、gateway、x402 与 Binance Wallet 适配层，不调用 DeepSeek 或 Binance 外部服务；外部调用测试由 CMake 选项显式开启。
+准入与所有业务判定并不等价：Agent 结构/经济约束拒绝不进入执行器；合约生命周期和结算资金校验在 WAL 前完成；部分交易业务拒绝（例如资金不足）在 journal 后的 apply 中返回，记录与分配的执行身份仍由恢复重放。不能将所有 rejection 都解释为“没有 WAL 记录”。
+
+若命令已持久化但进程在响应前崩溃，客户端结果是**不确定**的。重启使用匹配的 bootstrap 和有效 WAL 前缀重建权威经济状态及执行序列，Ledger 由命令应用重新生成；不调用模型或重建其思考过程。恢复接受不完整末尾记录并截断该尾部，对完整记录的损坏、序列错误或配置不匹配明确失败。
+
+- **没有 RequestId 去重或 exactly-once 保证**：RequestId 只用于关联操作，重复提交可能产生新的订单。
+- 已完成结算的合约受生命周期约束，重试返回 `InvalidTransition`，不会再次转账；这不是通用请求去重。
+- journal 失败或 durable 后意外 apply 不一致会 poison 共享 runtime，后续执行失败；不声称任意异常都具有事务回滚能力。
+
+真实进程边界由 [server crash tests](tests/gateway/durable_server_process_test.cpp) 和 [contract crash tests](tests/durability/durable_contract_process_test.cpp) 验证，包括未读取响应、崩溃重启和后续 ID 延续。
+
+## 内部结算
+
+结算使用**内部 quote 余额**。支付义务的执行流程是：
+
+```text
+PaymentObligation → 生命周期/参与方/资金校验 → 同步 WAL
+→ available quote 转账 → ContractState::Settled + 义务完成
+→ Ledger settlement metadata → 可从 WAL 重建
+```
+
+结算只花费可用 quote，不释放或挪用订单预留。Ledger metadata 关联合约与付款/收款账户。这里不涉及法币、USDT、钱包、区块链或 x402 结算；`ComputeCredit` 义务完成也不代表真实计算资源交付。
+
+## 测试策略
+
+默认测试按系统边界覆盖：
+
+| 边界 | 主要验证内容 |
+| --- | --- |
+| Matching / accounting | 价格时间优先、部分成交、撤单、所有权、预留、精确金额及 Ledger。 |
+| Execution | 稳定业务结果、准入、ID/逻辑时间分配、异常传播。 |
+| WAL / recovery | 编解码、同步先于 apply、损坏/尾部截断、bootstrap 一致性和状态重建。 |
+| Contracts / settlement | 生命周期、参与方权限、资金检查、内部转账、不重复结算及混合交易/合约恢复。 |
+| Agent runtime | Typed action、结构与经济约束、顺序可见性、拒绝不进入执行及 fake feed。 |
+| Providers（启用时） | JSON/action 和行情解析、元数据、快照与 stale 状态；使用 fake/captured 数据。 |
+| Networking / process | epoll framing、响应路由、有界队列背压，以及真实进程崩溃与重启。 |
+
+测试数量随 provider 配置变化，以当前 `ctest` 结果为准。性能测量使用下面的独立 benchmark targets；live smoke 是显式启用的应用，不属于默认测试。
+
+## 性能测量
+
+仓库提供三个目标，当前不展示缺少可比构建/机器记录的历史数字：
+
+| Target | 计时范围 |
+| --- | --- |
+| `exchange_benchmark` | Google Benchmark：OrderBook 操作，或 MatchingEngine + 事件生成的 command replay。排除 workload 准备、实例初始化/容量预留及清理；不包含账户结算、TCP 或 WAL。`EndToEndReplay` 指撮合 replay，不是 durable runtime 全链路。 |
+| `exchange_gateway_benchmark` | Throughput/latency：loopback TCP 请求到响应处理，包含 parser、队列、账户执行、撮合、Ledger 和客户端响应处理；durable 模式另包含逐命令 `fdatasync`。排除启动、连接、workload 准备、warmup 及阶段结束校验；压力场景有单独计时范围。 |
+| `exchange_recovery_benchmark` | 生产 `TradingRuntime::create_durable` 的启动恢复时间；排除 WAL 生成、恢复后校验和 ID probe。RSS 是当前驻留内存近似值，不是独立进程峰值。 |
+
+启用 benchmark 需要已安装 Google Benchmark CMake package：
+
+```bash
+cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release \
+  -DEXCHANGE_BUILD_TESTS=OFF -DEXCHANGE_BUILD_BENCHMARKS=ON \
+  -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF \
+  -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
+cmake --build build-bench --target exchange_benchmark \
+  exchange_gateway_benchmark exchange_recovery_benchmark -j
+./build-bench/exchange_benchmark
+./build-bench/exchange_gateway_benchmark --help
+./build-bench/exchange_recovery_benchmark 1000
+```
+
+比较结果时应保留编译器、Release 配置、机器/存储、workload、客户端并发及 durability 模式；非持久化吞吐量不能代替 durable 吞吐量。
+
+## 可选 Agent 集成
+
+AgentRuntime 的回合流程是 observation → provider intent → typed action → 结构校验 → 经济约束 → execution adapter → 结果/指标。主 demo 使用固定脚本 provider；可选 DeepSeek provider 将 JSON 响应解析为现有动作空间。模型输出始终是 advisory intent。
+
+- **DeepSeek**：`EXCHANGE_BUILD_DEEPSEEK_PROVIDER`，需要 libcurl 和 nlohmann-json。
+- **Binance Alpha**：`EXCHANGE_BUILD_BINANCE_ALPHA_FEED`，另外需要 OpenSSL 与 Boost headers。单个哈基米 symbol 由 Alpha 公共元数据解析；行情仅作为 observation context，未收到有效数据或 stale 时不制造价格。feed 不改账户、不结算资产、不发送 Binance 订单。
+- 两个 provider 构建选项默认 ON，但不自动调用服务。`EXCHANGE_BUILD_AGENT_LIVE_SMOKE=ON` 才构建 `exchange_agent_live_smoke`；它需要两个 provider，运行时访问真实服务，独立于离线主 demo。
+
+### Experimental Multi-Agent Layer
+
+`EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE=ON` 构建可选 `exchange_agent_society_smoke`。它组合有界回合、顺序观察可见性、初始（genesis）余额/配置、内部交易、合约结算与 utility/metrics；当前 CLI 将步数限制在 1–30。
+
+`--market none` 可关闭外部行情，但该 smoke 仍使用 DeepSeek，构建也仍要求两个 provider。`ComputeCredit` 是合成资源描述，没有生产/消费资源模型；交互可以稀疏，合法 HOLD 也是实验结果。这里不声称真实涌现或长期自治社会。Society 已作为后续研究保留，不驱动当前 runtime 的稳定基线。
+
+## 仓库导航与范围
+
+- `include/`、`src/`：`matching` 撮合；`accounting` 账户/预留/Ledger；`execution` 准入与 runtime；`durability` WAL/恢复；`gateway`/`protocol` 网络边界；`agent` typed domain、回合和可选 provider；`replay` 撮合 workload/replay。
+- `apps/`：主 demo、TCP server，以及 opt-in live/Society 应用。
+- `tests/`：单元、集成和进程级边界验证。
+- `benchmarks/`：撮合、gateway 和恢复测量。
+
+当前范围是单节点、每个 runtime 一个 instrument、串行权威执行、内部余额、同步 WAL、确定性恢复与有界 Agent 实验。
+
+非目标包括生产交易所部署、分布式共识/HA、snapshot/compaction、通用 Agent OS、钱包/托管、链上或 x402 结算、marketplace、reputation、信贷、通用谈判和真实 Binance 交易。
