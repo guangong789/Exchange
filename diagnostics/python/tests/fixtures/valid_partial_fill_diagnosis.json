@@ -1,0 +1,18 @@
+{
+  "diagnosis_type": "partial_fill",
+  "cause": "insufficient_executable_liquidity",
+  "summary": "Order 3 matched 2 of 5 units, exhausting executable liquidity at its limit; 3 units remain resting.",
+  "facts": {
+    "order_id": 3,
+    "submitted_quantity": 5,
+    "matched_quantity": 2,
+    "remaining_quantity": 3,
+    "limit_price": 100,
+    "remaining_state": "resting"
+  },
+  "evidence_refs": [
+    {"kind": "order", "id": 3},
+    {"kind": "ledger_sequence", "id": 4},
+    {"kind": "wal_sequence", "id": 3}
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "case_type": "partial_fill",
+  "execution": {
+    "events": [
+      {
+        "order_id": 3,
+        "order_logical_timestamp": 3,
+        "price": 100,
+        "quantity": 5,
+        "side": "BUY",
+        "type": "ORDER_ACCEPTED"
+      },
+      {
+        "buy_order_id": 3,
+        "logical_timestamp": 3,
+        "price": 100,
+        "quantity": 2,
+        "sell_order_id": 1,
+        "type": "TRADE_CREATED"
+      },
+      {
+        "filled_quantity": 2,
+        "order_id": 1,
+        "side": "SELL",
+        "type": "ORDER_FILLED"
+      },
+      {
+        "filled_quantity": 2,
+        "order_id": 3,
+        "remaining_quantity": 3,
+        "side": "BUY",
+        "type": "ORDER_PARTIALLY_FILLED"
+      }
+    ],
+    "result": "ACCEPTED"
+  },
+  "matched_quantity": 2,
+  "post_execution": {
+    "best_ask": 101,
+    "limit_price": 100,
+    "order_id": 3,
+    "remaining_quantity": 3,
+    "reservation": {
+      "account_id": 1,
+      "asset_id": 10,
+      "remaining_amount": 300
+    },
+    "resting": true,
+    "side": "BUY"
+  },
+  "pre_execution_book": {
+    "opposing_orders": [
+      {
+        "executable": true,
+        "order_id": 1,
+        "price": 100,
+        "quantity": 2,
+        "side": "SELL"
+      },
+      {
+        "executable": false,
+        "order_id": 2,
+        "price": 101,
+        "quantity": 4,
+        "side": "SELL"
+      }
+    ],
+    "total_executable_quantity": 2
+  },
+  "provenance": {
+    "account_id": 1,
+    "order_id": 3,
+    "order_logical_timestamp": 3,
+    "request_id": 1042,
+    "wal_sequence": 3
+  },
+  "target_order": {
+    "limit_price": 100,
+    "order_id": 3,
+    "side": "BUY",
+    "submitted_quantity": 5
+  },
+  "trades": [
+    {
+      "buy_order_id": 3,
+      "ledger_sequence": 4,
+      "logical_timestamp": 3,
+      "price": 100,
+      "quantity": 2,
+      "sell_order_id": 1
+    }
+  ]
+}

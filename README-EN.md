@@ -179,14 +179,12 @@ The AgentRuntime turn pipeline is observation → provider intent → typed acti
 
 ### Experimental Multi-Agent Layer
 
-`EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE=ON` builds the optional `exchange_agent_society_smoke`. It combines bounded turns, sequential observation visibility, initial (genesis) balances and configuration, internal trading, contract settlement, and utility/metrics. The current CLI limits runs to 1–30 steps.
-
-`--market none` disables external market data, but this smoke application still uses DeepSeek, and its build still requires both providers. `ComputeCredit` is a synthetic resource description with no production or consumption resource model. Interaction may be sparse, and a valid HOLD is also an experimental result. This project makes no claim of real emergence or a long-running autonomous society. Society remains parked for later research and does not drive the stable runtime baseline.
+The retained AgentRuntime and tests still cover bounded multi-Agent turns, sequential observation visibility, internal trading, contract settlement, and utility/metrics; the standalone Society smoke application has been removed. `ComputeCredit` is a synthetic resource description with no production or consumption resource model. Interaction may be sparse, and a valid HOLD is also an experimental result. This project makes no claim of real emergence or a long-running autonomous society. Society research remains parked and does not drive the stable runtime baseline.
 
 ## Repository Navigation and Scope
 
 - `include/` and `src/`: `matching` for matching; `accounting` for accounts, reservations, and the Ledger; `execution` for admission and the runtime; `durability` for the WAL and recovery; `gateway` and `protocol` for the networking boundary; `agent` for the typed domain, turns, and optional providers; and `replay` for matching workloads and replay.
-- `apps/`: the primary demo, TCP server, and opt-in live/Society applications.
+- `apps/`: the primary demo, TCP server, and opt-in live application.
 - `tests/`: unit, integration, and process-level boundary tests.
 - `benchmarks/`: matching, gateway, and recovery measurements.
 

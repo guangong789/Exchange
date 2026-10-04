@@ -177,14 +177,12 @@ AgentRuntime 的回合流程是 observation → provider intent → typed action
 
 ### Experimental Multi-Agent Layer
 
-`EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE=ON` 构建可选 `exchange_agent_society_smoke`。它组合有界回合、顺序观察可见性、初始（genesis）余额/配置、内部交易、合约结算与 utility/metrics；当前 CLI 将步数限制在 1–30。
-
-`--market none` 可关闭外部行情，但该 smoke 仍使用 DeepSeek，构建也仍要求两个 provider。`ComputeCredit` 是合成资源描述，没有生产/消费资源模型；交互可以稀疏，合法 HOLD 也是实验结果。这里不声称真实涌现或长期自治社会。Society 已作为后续研究保留，不驱动当前 runtime 的稳定基线。
+保留的 AgentRuntime 与测试仍覆盖有界多 Agent 回合、顺序观察可见性、内部交易、合约结算及 utility/metrics；独立的 Society smoke 应用已移除。`ComputeCredit` 是合成资源描述，没有生产/消费资源模型；交互可以稀疏，合法 HOLD 也是实验结果。这里不声称真实涌现或长期自治社会。Society 研究已暂停，不驱动当前 runtime 的稳定基线。
 
 ## 仓库导航与范围
 
 - `include/`、`src/`：`matching` 撮合；`accounting` 账户/预留/Ledger；`execution` 准入与 runtime；`durability` WAL/恢复；`gateway`/`protocol` 网络边界；`agent` typed domain、回合和可选 provider；`replay` 撮合 workload/replay。
-- `apps/`：主 demo、TCP server，以及 opt-in live/Society 应用。
+- `apps/`：主 demo、TCP server，以及 opt-in live 应用。
 - `tests/`：单元、集成和进程级边界验证。
 - `benchmarks/`：撮合、gateway 和恢复测量。
 

@@ -8,8 +8,6 @@ option(EXCHANGE_BUILD_DEEPSEEK_PROVIDER "Build the DeepSeek agent provider" ON)
 option(EXCHANGE_BUILD_BINANCE_ALPHA_FEED "Build the Binance Alpha market feed" ON)
 option(EXCHANGE_BUILD_AGENT_LIVE_SMOKE
     "Build the opt-in live Agent Native smoke application" OFF)
-option(EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE
-    "Build the opt-in multi-Agent society experiment" OFF)
 find_package(Threads REQUIRED)
 
 add_library(exchange_core
@@ -126,6 +124,27 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_features(exchange_runtime_demo PRIVATE cxx_std_20)
     target_compile_options(exchange_runtime_demo
         PRIVATE -Wall -Wextra -Wpedantic)
+
+    find_package(nlohmann_json CONFIG REQUIRED)
+    add_library(exchange_partial_fill_evidence
+        src/diagnostics/partial_fill_evidence.cpp
+    )
+    target_link_libraries(exchange_partial_fill_evidence
+        PUBLIC exchange::core
+        PRIVATE nlohmann_json::nlohmann_json
+    )
+    target_compile_features(exchange_partial_fill_evidence PUBLIC cxx_std_20)
+    target_compile_options(exchange_partial_fill_evidence
+        PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(exchange_diagnostic_evidence
+        apps/exchange_diagnostic_evidence/main.cpp
+    )
+    target_link_libraries(exchange_diagnostic_evidence
+        PRIVATE exchange_partial_fill_evidence)
+    target_compile_features(exchange_diagnostic_evidence PRIVATE cxx_std_20)
+    target_compile_options(exchange_diagnostic_evidence
+        PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(EXCHANGE_BUILD_BINANCE_ALPHA_FEED)
@@ -209,34 +228,6 @@ if(EXCHANGE_BUILD_AGENT_LIVE_SMOKE)
     else()
         target_compile_options(
             exchange_agent_live_smoke PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-endif()
-
-if(EXCHANGE_BUILD_AGENT_SOCIETY_SMOKE)
-    if(NOT TARGET exchange_agent_deepseek
-        OR NOT TARGET exchange_agent_binance_alpha)
-        message(FATAL_ERROR
-            "The Agent society smoke requires the DeepSeek provider and "
-            "Binance Alpha feed")
-    endif()
-
-    add_executable(exchange_agent_society_smoke
-        apps/exchange_agent_society_smoke/main.cpp
-    )
-    target_link_libraries(exchange_agent_society_smoke
-        PRIVATE
-            exchange::agent
-            exchange::agent_deepseek
-            exchange::agent_binance_alpha
-            Threads::Threads
-    )
-    target_compile_features(exchange_agent_society_smoke PRIVATE cxx_std_20)
-    if(MSVC)
-        target_compile_options(
-            exchange_agent_society_smoke PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(
-            exchange_agent_society_smoke PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
@@ -357,6 +348,10 @@ if(EXCHANGE_BUILD_TESTS)
             tests/gateway/tcp_gateway_test.cpp
         )
     endif()
+    if(TARGET exchange_partial_fill_evidence)
+        list(APPEND EXCHANGE_TEST_SOURCES
+            tests/diagnostics/partial_fill_evidence_test.cpp)
+    endif()
     add_executable(exchange_test ${EXCHANGE_TEST_SOURCES})
     target_link_libraries(exchange_test
         PRIVATE
@@ -379,6 +374,11 @@ if(EXCHANGE_BUILD_TESTS)
         target_compile_definitions(exchange_test PRIVATE
             EXCHANGE_SERVER_PATH="$<TARGET_FILE:exchange_server>"
         )
+    endif()
+    if(TARGET exchange_partial_fill_evidence)
+        target_link_libraries(exchange_test PRIVATE
+            exchange_partial_fill_evidence
+            nlohmann_json::nlohmann_json)
     endif()
     target_compile_features(exchange_test PRIVATE cxx_std_20)
 

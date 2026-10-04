@@ -4,7 +4,6 @@
 #include "agent/runtime/agent_runtime.hpp"
 #include "durability/execution_wal.hpp"
 #include "execution/trading_runtime.hpp"
-#include "../../../apps/exchange_agent_society_smoke/final_observations.hpp"
 
 #include <map>
 #include <memory>
@@ -139,9 +138,14 @@ namespace exchange {
 
             runtime.run_step_at(1);
             const auto trace_before = runtime.trace();
-            const auto final = society_smoke::capture_final_observations(
-                observations, participants, runtime.current_step());
-            const auto& seller_final = final.at(agent_a);
+            const WorldState final_world = observations.capture_world(
+                runtime.current_step());
+            AgentObservation seller_final = observations.observe(
+                agent_a, final_world, participants.front().objective);
+            seller_final.economic_profile =
+                participants.front().economic_profile;
+            seller_final.preference_profile =
+                participants.front().preference_profile;
 
             ASSERT_EQ(runtime.trace().size(), 2U);
             EXPECT_EQ(runtime.trace()[0].post_state.base_balance, (Balance{0, 1}));
