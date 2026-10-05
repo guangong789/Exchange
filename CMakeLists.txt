@@ -145,6 +145,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_features(exchange_diagnostic_evidence PRIVATE cxx_std_20)
     target_compile_options(exchange_diagnostic_evidence
         PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_library(exchange_historical_order_evidence_lib
+        src/diagnostics/historical_order_evidence.cpp)
+    target_link_libraries(exchange_historical_order_evidence_lib
+        PUBLIC exchange::core
+        PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_features(exchange_historical_order_evidence_lib PUBLIC cxx_std_20)
+    target_compile_options(exchange_historical_order_evidence_lib
+        PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(exchange_historical_order_evidence
+        apps/exchange_historical_order_evidence/main.cpp)
+    target_link_libraries(exchange_historical_order_evidence
+        PRIVATE exchange_historical_order_evidence_lib)
+    target_compile_features(exchange_historical_order_evidence PRIVATE cxx_std_20)
+    target_compile_options(exchange_historical_order_evidence
+        PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(EXCHANGE_BUILD_BINANCE_ALPHA_FEED)
@@ -352,6 +369,10 @@ if(EXCHANGE_BUILD_TESTS)
         list(APPEND EXCHANGE_TEST_SOURCES
             tests/diagnostics/partial_fill_evidence_test.cpp)
     endif()
+    if(TARGET exchange_historical_order_evidence_lib)
+        list(APPEND EXCHANGE_TEST_SOURCES
+            tests/diagnostics/historical_order_evidence_test.cpp)
+    endif()
     add_executable(exchange_test ${EXCHANGE_TEST_SOURCES})
     target_link_libraries(exchange_test
         PRIVATE
@@ -381,6 +402,12 @@ if(EXCHANGE_BUILD_TESTS)
             nlohmann_json::nlohmann_json)
     endif()
     target_compile_features(exchange_test PRIVATE cxx_std_20)
+    if(TARGET exchange_historical_order_evidence_lib)
+        target_link_libraries(exchange_test PRIVATE exchange_historical_order_evidence_lib)
+        add_dependencies(exchange_test exchange_historical_order_evidence)
+        target_compile_definitions(exchange_test PRIVATE
+            EXCHANGE_HISTORICAL_EVIDENCE_PATH="$<TARGET_FILE:exchange_historical_order_evidence>")
+    endif()
 
     include(GoogleTest)
     gtest_discover_tests(exchange_test)

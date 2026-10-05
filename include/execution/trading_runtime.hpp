@@ -21,16 +21,23 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace exchange {
+    struct RecoveredTradingOutcome;
+
     class TradingRuntime {
     public:
         explicit TradingRuntime(InstrumentContext instrument);
 
+        // Optional replay-derived outcomes are published only after successful
+        // construction. The caller's collection is unchanged on failure.
         [[nodiscard]] static std::unique_ptr<TradingRuntime> create_durable(
             InstrumentContext instrument,
             std::string wal_path,
-            const TradingBootstrapConfig& bootstrap);
+            const TradingBootstrapConfig& bootstrap,
+            std::vector<RecoveredTradingOutcome>* recovered_trading_outcomes
+                = nullptr);
 
         TradingRuntime(const TradingRuntime&) = delete;
         TradingRuntime& operator=(const TradingRuntime&) = delete;

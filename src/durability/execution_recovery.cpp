@@ -51,7 +51,8 @@ namespace exchange {
     ExecutionRecoverySummary ExecutionRecovery::recover(
         std::span<const WalRecord> records,
         std::size_t writer_record_count,
-        WalSequence writer_next_sequence) {
+        WalSequence writer_next_sequence,
+        std::vector<RecoveredTradingOutcome>* recovered_trading_outcomes) {
         verify_fresh_state();
         const AccountStore::AccountBalances bootstrap_accounts =
             accounts_.entries();
@@ -73,6 +74,13 @@ namespace exchange {
                 ExecutionRecoveryFailure::WalPrefixMismatch,
                 records.empty() ? 0 : records.back().sequence,
                 "WAL writer next sequence differs from recovery prefix"};
+        }
+
+        std::vector<RecoveredTradingOutcome> staged_outcomes;
+        if (recovered_trading_outcomes != nullptr) {
+            // Reserve before replay so collecting copied results cannot
+            // allocate within the command-application failure boundary.
+            staged_outcomes.reserve(records.size());
         }
 
         std::size_t submit_attempts = 0;
@@ -115,7 +123,12 @@ namespace exchange {
                         record.command)
                     || std::holds_alternative<CancelExecutionCommand>(
                         record.command)) {
-                    static_cast<void>(command_applier_.apply(record.command));
+                    const TradingResponse response =
+                        command_applier_.apply(record.command);
+                    if (recovered_trading_outcomes != nullptr) {
+                        staged_outcomes.push_back({
+                            record.sequence, response.result});
+                    }
                 } else if (contract_command_applier_.apply(record.command)
                            != ContractResult::Success) {
                     throw std::logic_error(
@@ -139,6 +152,9 @@ namespace exchange {
         verify_recovered_state(
             records.empty() ? 0 : records.back().sequence,
             bootstrap_accounts);
+        if (recovered_trading_outcomes != nullptr) {
+            recovered_trading_outcomes->swap(staged_outcomes);
+        }
         return ExecutionRecoverySummary{
             records.size(),
             submit_attempts,

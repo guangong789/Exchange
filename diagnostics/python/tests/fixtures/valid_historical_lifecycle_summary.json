@@ -1,0 +1,63 @@
+{
+  "response_type": "historical_order_summary",
+  "summary": "Replay-derived facts for order 2.",
+  "facts": {
+    "order_id": 2,
+    "submitted_quantity": 5,
+    "submitted_price": 100,
+    "submitted_side": "BUY",
+    "submission_recovered_result": "Accepted",
+    "matched_quantity": 3,
+    "final_status": "not_resting",
+    "remaining_quantity": null,
+    "outcome_basis": "deterministic_replay",
+    "recovered_terminal_wal_sequence": 7,
+    "torn_tail_ignored": false
+  },
+  "cancel_attempts": [
+    {
+      "wal_sequence": 5,
+      "account_id": 22,
+      "request_id": 2002,
+      "recovered_result": "CancelNotOwner"
+    },
+    {
+      "wal_sequence": 6,
+      "account_id": 11,
+      "request_id": 2002,
+      "recovered_result": "Cancelled"
+    },
+    {
+      "wal_sequence": 7,
+      "account_id": 11,
+      "request_id": 2002,
+      "recovered_result": "CancelNotFound"
+    }
+  ],
+  "evidence_refs": [
+    {
+      "kind": "wal_sequence",
+      "id": 2
+    },
+    {
+      "kind": "wal_sequence",
+      "id": 5
+    },
+    {
+      "kind": "wal_sequence",
+      "id": 6
+    },
+    {
+      "kind": "wal_sequence",
+      "id": 7
+    },
+    {
+      "kind": "ledger_sequence",
+      "id": 3
+    },
+    {
+      "kind": "ledger_sequence",
+      "id": 5
+    }
+  ]
+}

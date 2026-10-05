@@ -16,6 +16,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace exchange {
     enum class ExecutionRecoveryFailure {
@@ -52,6 +53,13 @@ namespace exchange {
         ContractId next_contract_id{};
     };
 
+    struct RecoveredTradingOutcome {
+        WalSequence wal_sequence{};
+        TradingResult result{TradingResult::InvalidRequest};
+
+        bool operator==(const RecoveredTradingOutcome&) const = default;
+    };
+
     class ExecutionRecovery {
     public:
         ExecutionRecovery(
@@ -67,10 +75,14 @@ namespace exchange {
             ContractSequencer& contract_sequencer,
             ContractCommandApplier& contract_command_applier) noexcept;
 
+        // Optional outcomes replace the caller's collection only after all
+        // recovery checks succeed; on failure the collection is unchanged.
         [[nodiscard]] ExecutionRecoverySummary recover(
             std::span<const WalRecord> records,
             std::size_t writer_record_count,
-            WalSequence writer_next_sequence);
+            WalSequence writer_next_sequence,
+            std::vector<RecoveredTradingOutcome>* recovered_trading_outcomes
+                = nullptr);
 
     private:
         void verify_fresh_state() const;

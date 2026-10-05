@@ -1,0 +1,32 @@
+{
+  "response_type": "historical_order_summary",
+  "summary": "Replay-derived facts for order 2.",
+  "facts": {
+    "order_id": 2,
+    "submitted_quantity": 5,
+    "submitted_price": 100,
+    "submitted_side": "BUY",
+    "submission_recovered_result": "Accepted",
+    "matched_quantity": 3,
+    "final_status": "resting",
+    "remaining_quantity": 2,
+    "outcome_basis": "deterministic_replay",
+    "recovered_terminal_wal_sequence": 4,
+    "torn_tail_ignored": false
+  },
+  "cancel_attempts": [],
+  "evidence_refs": [
+    {
+      "kind": "wal_sequence",
+      "id": 2
+    },
+    {
+      "kind": "ledger_sequence",
+      "id": 3
+    },
+    {
+      "kind": "ledger_sequence",
+      "id": 5
+    }
+  ]
+}

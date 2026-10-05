@@ -1,0 +1,71 @@
+{
+  "cancel_attempts": [
+    {
+      "account_id": 22,
+      "order_id": 2,
+      "recovered_result": "CancelNotOwner",
+      "request_id": 2002,
+      "wal_sequence": 5
+    }
+  ],
+  "case_type": "historical_durable_order",
+  "evidence_scope": [
+    "durable_submission",
+    "recovered_ledger",
+    "recovered_final_state",
+    "recovered_trading_outcomes"
+  ],
+  "final_state": {
+    "price": 100,
+    "remaining_quantity": 2,
+    "reservation": {
+      "account_id": 11,
+      "asset_id": 10,
+      "original_amount": 500,
+      "remaining_amount": 200
+    },
+    "side": "BUY",
+    "status": "resting"
+  },
+  "matched_quantity": 3,
+  "order_id": 2,
+  "outcome_basis": "deterministic_replay",
+  "recovery": {
+    "ignored_torn_tail": false,
+    "through_wal_sequence": 5
+  },
+  "submission": {
+    "account_id": 11,
+    "logical_timestamp": 2,
+    "price": 100,
+    "quantity": 5,
+    "recovered_result": "Accepted",
+    "request_id": 2002,
+    "side": "BUY",
+    "wal_sequence": 2
+  },
+  "trades": [
+    {
+      "buy_order_id": 2,
+      "ledger_sequence": 3,
+      "logical_timestamp": 2,
+      "price": 100,
+      "quantity": 2,
+      "sell_order_id": 1
+    },
+    {
+      "buy_order_id": 2,
+      "ledger_sequence": 5,
+      "logical_timestamp": 3,
+      "price": 100,
+      "quantity": 1,
+      "sell_order_id": 3
+    }
+  ],
+  "unavailable_context": {
+    "execution_events": null,
+    "matching_stop_reason": null,
+    "pre_execution_book": null,
+    "response_delivery": null
+  }
+}

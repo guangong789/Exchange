@@ -8,8 +8,12 @@ import os
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from typing import Any
 
 from .diagnostic_provider import ProviderError, ProviderTimeoutError
+from .evidence_tool_call import EvidenceToolCall, tool_selection_messages
+from .historical_order_tool import historical_order_tool_schema
+from .partial_fill_tool import partial_fill_tool_schema
 
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -35,6 +39,32 @@ class DeepSeekDiagnosticProvider:
     max_response_bytes: int = MAX_RESPONSE_BYTES
 
     def complete(self, prompt: str) -> str:
+        message = self._request_message([
+            {"role": "system", "content": "Return only JSON grounded in the supplied evidence."},
+            {"role": "user", "content": prompt},
+        ])
+        return self._assistant_text(message)
+
+    def select_evidence_tool(self, question: str) -> dict[str, Any]:
+        return self._request_message(tool_selection_messages(question), select_tool=True)
+
+    def complete_with_evidence_tool(
+        self, question: str, call: EvidenceToolCall, evidence_json: str, prompt: str,
+    ) -> str:
+        messages = tool_selection_messages(question) + [
+            call.assistant_message(),
+            {"role": "tool", "tool_call_id": call.call_id, "content": evidence_json},
+            {"role": "user", "content": prompt},
+        ]
+        # No tools are offered in this final request; there is no agent loop.
+        message = self._request_message(messages)
+        if message.get("tool_calls"):
+            raise ProviderError("Unexpected tool call during final diagnosis")
+        return self._assistant_text(message)
+
+    def _request_message(
+        self, messages: list[dict[str, Any]], *, select_tool: bool = False,
+    ) -> dict[str, Any]:
         key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         if not key or not key.isascii() or any(char.isspace() for char in key):
             raise ProviderError("DEEPSEEK_API_KEY is missing or invalid")
@@ -59,20 +89,22 @@ class DeepSeekDiagnosticProvider:
         if type(self.max_response_bytes) is not int or self.max_response_bytes <= 0:
             raise ProviderError("DeepSeek response size limit must be a positive integer")
 
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0,
+            "thinking": {"type": "disabled"},
+            "max_tokens": 1024,
+            "stream": False,
+        }
+        if select_tool:
+            payload["tools"] = [partial_fill_tool_schema(), historical_order_tool_schema()]
+            payload["tool_choice"] = "auto"
+        else:
+            payload["response_format"] = {"type": "json_object"}
         request = Request(
             base_url.rstrip("/") + "/chat/completions",
-            data=json.dumps({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "Return only JSON grounded in the supplied evidence."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0,
-                "thinking": {"type": "disabled"},
-                "response_format": {"type": "json_object"},
-                "max_tokens": 1024,
-                "stream": False,
-            }).encode("utf-8"),
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
             method="POST",
         )
@@ -106,6 +138,10 @@ class DeepSeekDiagnosticProvider:
         message = choices[0].get("message")
         if not isinstance(message, dict) or message.get("role") != "assistant":
             raise ProviderError("DeepSeek response has no assistant message")
+        return message
+
+    @staticmethod
+    def _assistant_text(message: dict[str, Any]) -> str:
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise ProviderError("DeepSeek response has no assistant content")

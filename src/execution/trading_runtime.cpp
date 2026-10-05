@@ -39,7 +39,8 @@ namespace exchange {
     std::unique_ptr<TradingRuntime> TradingRuntime::create_durable(
         InstrumentContext instrument,
         std::string wal_path,
-        const TradingBootstrapConfig& bootstrap) {
+        const TradingBootstrapConfig& bootstrap,
+        std::vector<RecoveredTradingOutcome>* recovered_trading_outcomes) {
         auto runtime = std::unique_ptr<TradingRuntime>{
             new TradingRuntime{instrument}};
         const BootstrapFingerprint bootstrap_fingerprint =
@@ -68,10 +69,12 @@ namespace exchange {
             runtime->contracts_,
             runtime->contract_sequencer_,
             runtime->contract_command_applier_};
+        std::vector<RecoveredTradingOutcome> staged_outcomes;
         static_cast<void>(recovery.recover(
             records,
             runtime->wal_writer_->record_count(),
-            runtime->wal_writer_->next_sequence()));
+            runtime->wal_writer_->next_sequence(),
+            recovered_trading_outcomes != nullptr ? &staged_outcomes : nullptr));
 
         if (runtime->wal_writer_->poisoned()
             || runtime->executor_.poisoned()) {
@@ -85,6 +88,9 @@ namespace exchange {
         runtime->contract_executor_.attach_command_journal(
             *runtime->wal_writer_);
         runtime->bootstrap_sealed_ = true;
+        if (recovered_trading_outcomes != nullptr) {
+            recovered_trading_outcomes->swap(staged_outcomes);
+        }
         return runtime;
     }
 

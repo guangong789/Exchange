@@ -1,0 +1,41 @@
+{
+  "cancel_attempts": [],
+  "case_type": "historical_durable_order",
+  "evidence_scope": [
+    "durable_submission",
+    "recovered_ledger",
+    "recovered_final_state",
+    "recovered_trading_outcomes"
+  ],
+  "final_state": {
+    "price": null,
+    "remaining_quantity": null,
+    "reservation": null,
+    "side": null,
+    "status": "not_resting"
+  },
+  "matched_quantity": 0,
+  "order_id": 4,
+  "outcome_basis": "deterministic_replay",
+  "recovery": {
+    "ignored_torn_tail": false,
+    "through_wal_sequence": 5
+  },
+  "submission": {
+    "account_id": 11,
+    "logical_timestamp": 4,
+    "price": 100,
+    "quantity": 100,
+    "recovered_result": "InsufficientFunds",
+    "request_id": 6060,
+    "side": "BUY",
+    "wal_sequence": 5
+  },
+  "trades": [],
+  "unavailable_context": {
+    "execution_events": null,
+    "matching_stop_reason": null,
+    "pre_execution_book": null,
+    "response_delivery": null
+  }
+}
