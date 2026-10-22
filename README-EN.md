@@ -2,192 +2,73 @@
 
 [简体中文](README.md) | English
 
-> This is the English version of `README.md`. If the two versions differ, the Chinese README is authoritative.
+A C++20 deterministic execution system for account-backed trading, bilateral contracts, and internal settlement, with synchronous WAL durability and crash recovery. AI proposes typed actions and evidence-based diagnoses; deterministic mechanisms constrain both execution and factual claims.
 
-A deterministic C++20 execution runtime that converts probabilistic or scripted Agent intent into typed actions, applies structural validation and economic constraints, and then executes internal exchange trading, durable bilateral contracts, and internal settlement. The system uses exact integer accounting, a synchronous WAL, and crash recovery to reconstruct orders, balances, reservations, contracts, and the Ledger.
+**Untrusted AI can propose actions and explanations, but deterministic mechanisms decide what becomes authoritative or trusted.**
 
-**Agents may propose actions, but they cannot directly mutate authoritative financial state through the Agent interface.** Model output is advisory; the runtime determines admission, execution order, and economic consequences. This is a systems engineering and portfolio project.
-
-## Core Guarantees
-
-- **Explicit execution order**: The TCP gateway uses epoll for concurrent I/O, bounded command and response queues, and a single execution thread. AgentRuntime executes turns sequentially. Both reuse the trading execution boundary. Callers that compose the runtime directly are responsible for serializing calls; the interface does not support arbitrary concurrent writes.
-- **Typed Agent boundary**: Actions pass through structural validation and configured hard economic constraints before an adapter forwards them to the executors. Policies cannot write accounts, matching state, or the Ledger directly.
-- **Exact trading and accounting**: Prices, quantities, and asset balances use integers and checked conversions. Account-backed orders use price-time priority; buy orders reserve quote, sell orders reserve base, and cancellation verifies ownership before releasing the remaining reservation.
-- **Internal contract settlement**: The runtime validates lifecycle state, participants, and available funds, transfers internal quote through the existing execution path, and records Ledger settlement metadata.
-- **WAL-before-apply**: A durable runtime synchronously journals a command before applying it to authoritative state. Trading and contract commands share the WAL sequence.
-- **Deterministic recovery and explicit failure**: The same bootstrap and a valid WAL reconstruct economic state. Recovery validates the configuration fingerprint, record version, checksum, and sequence. It truncates an incomplete trailing record and refuses to start when a complete record is corrupted. Journal failures or unexpected apply failures poison the runtime.
-
-These guarantees are covered by the [trading execution tests](tests/execution/trading_request_executor_test.cpp), [durable Agent tests](tests/agent/exchange/durable_agent_execution_test.cpp), [durable contract tests](tests/durability/durable_contract_execution_test.cpp), and [recovery tests](tests/durability/execution_recovery_test.cpp). Non-durable construction paths remain available for tests and benchmarks; the primary demo and server described here use the durable runtime.
-
-## Architecture and Trust Boundary
-
-```mermaid
-flowchart TD
-    P[Scripted Policy / optional LLM] --> A[Typed AgentAction]
-    A --> V[Agent structural validation and economic constraints]
-    V --> X[Agent execution adapter]
-    T[TCP Client] --> G[epoll / parser / bounded queues]
-    G --> Q[Single execution thread]
-    Q --> R[Trading request admission]
-    X --> R
-    X --> C[Contract lifecycle / funds preflight]
-    R --> W[Synchronous WAL append + fdatasync]
-    C --> W
-    W --> E[Apply: Trading / Contracts / Internal Settlement]
-    E --> S[Accounts / Reservations / OrderBook / Contracts / Ledger]
-    E --> O[Execution response]
-    W --> B[Restart: validate bootstrap + WAL / replay]
-    B --> S
-    subgraph Optional[Optional integrations and experiments]
-        D[DeepSeek] -.-> P
-        M[Binance Alpha public market data] -.-> Obs[Observation context]
-        Obs -.-> P
-        Soc[Bounded Society experiments] -.-> P
-    end
-```
-
-Agent economic constraints belong to the AgentRuntime turn pipeline. TCP trading requests use account-aware trading admission and business validation; they do not automatically receive Agent profile constraints. Contracts are currently executed through the Agent or direct runtime interfaces, while the TCP protocol supports trading requests only.
-
-## Demo A: Deterministic Local Demo
-
-[exchange_runtime_demo](apps/exchange_runtime_demo/main.cpp) uses production execution paths, fixed scripted actions, and a real temporary WAL. It requires no external APIs, model credentials, or internet access. The program checks its result at each stage, exits with failure if an expectation is violated, and removes the temporary WAL when it finishes.
-
-| Demo stage | Observable result and invariant |
-| --- | --- |
-| 1. Valid typed trading actions | Two Agents submit a sell order and a buy order, producing a trade, a remaining resting order, a reservation, and Ledger entries. |
-| 2. Invalid intent rejection | A buy price exceeds the existing `max_buy_price` constraint; accounts, orders, reservations, the Ledger, and the WAL remain unchanged. |
-| 3. Durable contract lifecycle + internal settlement | `Proposed → Accepted → Fulfilled → Settled`; the demo shows both identities, the ContractId, obligations, the quote transfer, and Ledger metadata. |
-| 4. Ambiguous crash window | After the child process completes a command through the durable executor, the parent sends `SIGKILL` before delivery of the business response. The WAL contains the command, but the application did not receive a success response. |
-| 5. Process restart + recovery | A fresh runtime is created from the same bootstrap and WAL, then verifies the recovered orders, balances, reservations, contract, and Ledger. No Agent decision memory is restored. |
-| 6. Explicit retry semantics | Submitting the same RequestId again creates a new order and demonstrates ID continuity after recovery. Retrying an already settled contract returns `InvalidTransition` and does not pay twice. |
-
-Output excerpt:
+## Architecture
 
 ```text
-Result: EconomicConstraintRejected reason=BuyPriceExceeded
-Authoritative state unchanged: true
-Lifecycle: Proposed -> Accepted -> Fulfilled -> Settled
-Business response delivered: false
-Process terminated with SIGKILL.
-Exact expected state recovered: true
-Repeated request_id=40 result=Accepted new_order_id=4
-Settlement retry: contract_id=1 result=InvalidTransition
+Client / Agent → Deterministic execution (optional WAL) → Trading / contracts / accounting
+
+Model claims + execution evidence → Validation → Local trusted summary
 ```
 
-## Build and Run
+TCP I/O can be concurrent while authoritative mutations remain serial. Agents can also call the runtime directly, without TCP. Durable mode synchronizes the WAL before applying commands; diagnostics reads evidence separately and does not mutate authoritative state.
 
-The demo and epoll server target Linux / WSL2 and require a C++20 compiler and CMake 3.20+. The minimal build explicitly disables the optional providers that are enabled by default, so their dependencies are not required:
+## Design Decisions
+
+### Q1. Why handle network requests concurrently but serialize authoritative state changes?
+
+A trade affects the order book, account reservations, and Ledger together. Interleaving those mutations would introduce more intermediate states and coordination across modules. The gateway therefore uses epoll for concurrent I/O, with bounded command and response queues connecting it to one execution thread and connection identities routing responses. Bounded queues limit backlog; an explicit command order makes state changes and replay easier to reason about.
+
+Determinism applies to the same initial state and ordered commands, not an identical arrival order for concurrent requests. Direct Agent/runtime callers must also serialize execution. This gives authoritative state a clear execution order, making account consistency and crash recovery easier to reason about.
+
+### Q2. How are trades, reserved funds, and settlement kept consistent?
+
+Matching determines which orders trade, but cannot by itself ensure that their owners can pay. Account-backed execution first reserves quote assets for buys and base assets for sells, then performs financial preflight checks against the expected matches. Actual trades must agree with that plan before driving asset clearing and Ledger postings that balance per asset.
+
+Partial fills retain reservations for the remainder; buy-side price improvements release excess funds. Cancellation checks ownership and releases only the remaining obligation. Bilateral contract settlement spends available quote without consuming order reservations, as covered by the [account execution tests](tests/accounting/execution_coordinator_test.cpp) and [contract settlement tests](tests/durability/durable_contract_execution_test.cpp).
+
+### Q3. What happens if a command is durable but the client never receives its response?
+
+Durable mode appends and synchronizes the command before applying it, then returns a business response. The process may crash after execution but before delivery, or the connection may break in that window. Restart validates the log and replays valid history in order from matching bootstrap account state, reconstructing orders, balances, reservations, contracts, and the Ledger. A missing response therefore cannot establish non-execution; the [real process tests](tests/gateway/durable_server_process_test.cpp) exercise this window.
+
+Journal acceptance is also distinct from business success: trading rejections such as insufficient funds can occur after journaling and recur during recovery. RequestId only correlates requests and responses; resubmitting it may create another order, with no general deduplication or exactly-once guarantee. Settled contracts reject another settlement to prevent double payment, but that protection is specific to their state machine.
+
+### Q4. How can AI propose trading actions without bypassing execution constraints?
+
+Model output cannot authorize itself. The provider parses it into a closed set of typed actions; AgentRuntime checks structure and configured hard economic constraints. A host-side adapter then binds the account and acting identity from the registry, so action fields cannot substitute another execution account.
+
+The execution path independently checks balances, cancellation ownership, contract permissions, and state transitions. Agent interfaces submit action requests; the execution layer modifies accounts, the order book, and Ledger. Economic profiles add admission constraints that TCP clients do not automatically inherit. The execution layer's business checks make the final admission decision.
+
+### Q5. Why is valid model JSON not enough to trust an AI diagnosis?
+
+Valid JSON establishes parseability, and schema validation alone cannot establish truth. The diagnostic runner grounds supported facts and causes against C++ execution evidence, then renders a trusted summary locally from validated fields. Even correct structured facts do not make arbitrary accompanying prose trustworthy. If an order is partially filled with its remainder resting, but the model writes “cancelled,” the local summary reports the verified resting state; contradictory structured facts instead cause rejection. The [diagnostic regression tests](diagnostics/python/tests/test_diagnostic_runner.py) check that provider prose cannot change the trusted summary.
+
+Evidence also limits the questions that can be answered. Execution-time partial-fill evidence comes from a fixed real C++ scenario, not arbitrary historical contexts. The historical tool runs production recovery on a private copy of an offline WAL, with conclusions limited to the recovered prefix. It cannot prove original response delivery or recreate missing pre-execution matching context or arbitrary matching-stop causes. Equal OrderIds across independent tools do not identify the same execution.
+
+### Q6. Why did the Ledger optimization improve throughput but barely affect durable performance?
+
+Earlier profiling identified repeated relocation as Ledger history grew: reserving exactly the required capacity for successive small batches repeatedly moved existing records. The [implementation](src/accounting/ledger.cpp) now uses bounded geometric growth, reducing relocations at the cost of additional spare capacity. Allocation stays in prepare; commit remains allocation-free and `noexcept`, preserving accounting and WAL semantics.
+
+Previously reported paired measurements showed **21,204 → 51,550 commands/s (approximately 2.43×)** for a four-client, 10,000-command non-durable gateway workload. A four-client, 2,000-command durable workload stayed at **250.32 → 250.28 commands/s**. Environment: GCC 13.4, Release `-O3`, WSL2 / i9-12900H. Reducing Ledger history relocations paid off in this non-durable workload, while per-command WAL synchronization remained the dominant cost in durable mode.
+
+## Quick Start
+
+On Linux / WSL2, use a C++20 compiler, CMake 3.20+, the nlohmann-json CMake package, and GoogleTest (downloaded through CMake FetchContent if unavailable). Disabling external providers does not remove the nlohmann-json dependency.
+
+Without live models or external APIs, the [main demo](apps/exchange_runtime_demo/main.cpp) uses scripted actions and a real WAL to demonstrate trading, contract settlement, a process crash before response delivery, and exact recovery. Run from the repository root:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF \
-  -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
-cmake --build build -j
-./build/exchange_runtime_demo
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
+cmake --build build -j4
 ctest --test-dir build --output-on-failure
+./build/exchange_runtime_demo
 ```
 
-Tests are enabled by default. If GoogleTest is not installed, CMake downloads v1.15.2, so the first configuration may require network access. Once built, the demo and default tests do not access external services.
+This configuration disables optional external integrations; the main demo does not require live market data or a model API. Python diagnostics tests require Python 3.10+: `python3 -m unittest discover -s diagnostics/python/tests -v`. They make no live API calls by default and skip explicitly opt-in historical C++ integration tests.
 
-The standalone trading server uses the existing fixed bootstrap. Choose an available port and a writable WAL path:
+## Scope and Limitations
 
-```bash
-./build/exchange_server 9000 ./build/server.wal
-```
-
-The server does not provide production-grade authentication or account-management APIs. Demo A composes the runtime directly so it can show contracts and state queries that the TCP protocol does not expose.
-
-## Durability, Recovery, and Failure Semantics
-
-Durable execution follows this order:
-
-```text
-validate / admit → append WAL → fdatasync → apply authoritative state → respond
-```
-
-Admission is not equivalent to every business decision. Agent structural or economic-constraint rejections never reach the executor. Contract lifecycle checks and settlement funds validation complete before the WAL write. Some trading business rejections, such as insufficient funds, are returned during apply after journaling; recovery still replays the record and its allocated execution identity. It is therefore incorrect to interpret every rejection as “no WAL record.”
-
-If a command is durable but the process crashes before sending its response, the client observes an **ambiguous response**. On restart, a matching bootstrap and a valid WAL prefix reconstruct authoritative economic state and execution sequences. The Ledger is regenerated by applying commands; recovery neither calls the model nor reconstructs its reasoning. Recovery accepts and truncates an incomplete trailing record, but explicitly fails on complete-record corruption, sequence errors, or configuration mismatches.
-
-- **There is no RequestId deduplication or exactly-once guarantee**: RequestId correlates an operation only, and a retry may create a new order.
-- Contract lifecycle rules reject a retry after completed settlement with `InvalidTransition`, preventing another transfer. This is not general-purpose request deduplication.
-- A journal failure or an unexpected apply inconsistency after durability poisons the shared runtime and causes subsequent execution to fail. The system does not claim transactional rollback for arbitrary exceptions.
-
-The real process boundary is verified by the [server crash tests](tests/gateway/durable_server_process_test.cpp) and [contract crash tests](tests/durability/durable_contract_process_test.cpp), including unread responses, crash/restart behavior, and subsequent ID continuity.
-
-## Internal Settlement
-
-Settlement uses the **internal quote balance**. A payment obligation follows this path:
-
-```text
-PaymentObligation → lifecycle / participant / funds validation → synchronous WAL
-→ available quote transfer → ContractState::Settled + obligation completion
-→ Ledger settlement metadata → recoverable from WAL
-```
-
-Settlement spends available quote only; it does not release or consume order reservations. Ledger metadata links the contract with the payer and payee accounts. This is not fiat, USDT, wallet, blockchain, or x402 settlement. Completion of a `ComputeCredit` obligation also does not represent delivery of real compute resources.
-
-## Test Strategy
-
-The default tests cover system boundaries:
-
-| Boundary | Primary coverage |
-| --- | --- |
-| Matching / accounting | Price-time priority, partial fills, cancellation, ownership, reservations, exact amounts, and the Ledger. |
-| Execution | Stable business results, admission, ID and logical-time allocation, and exception propagation. |
-| WAL / recovery | Encoding and decoding, synchronization before apply, corruption and torn-tail handling, bootstrap consistency, and state reconstruction. |
-| Contracts / settlement | Lifecycle, participant authorization, funds validation, internal transfers, prevention of repeated settlement, and recovery of mixed trading and contract histories. |
-| Agent runtime | Typed actions, structural and economic constraints, sequential visibility, rejection before execution, and a fake feed. |
-| Providers (when enabled) | JSON/action and market-data parsing, metadata, snapshots, and stale state using fake or captured data. |
-| Networking / process | epoll framing, response routing, bounded-queue backpressure, and real process crash/restart behavior. |
-
-The test count varies with the provider configuration; use the current `ctest` result as the source of truth. Performance measurements use the separate benchmark targets below. Live smoke applications require explicit opt-in and are not part of the default tests.
-
-## Performance Measurement
-
-The repository provides three targets. Historical numbers without comparable build and machine records are intentionally omitted:
-
-| Target | Timed scope |
-| --- | --- |
-| `exchange_benchmark` | Google Benchmark measures OrderBook operations or command replay through MatchingEngine with event generation. It excludes workload preparation, instance initialization and capacity reservation, and cleanup. It does not include account settlement, TCP, or the WAL. `EndToEndReplay` means matching replay, not the full durable runtime path. |
-| `exchange_gateway_benchmark` | Throughput and latency measure loopback TCP request/response processing, including parsing, queues, account execution, matching, the Ledger, and client-side response handling. Durable mode additionally includes per-command `fdatasync`. Startup, connection establishment, workload preparation, warmup, and end-of-phase validation are excluded. Pressure scenarios use separate timing scopes. |
-| `exchange_recovery_benchmark` | Measures startup recovery through the production `TradingRuntime::create_durable` path. WAL generation, post-recovery validation, and the ID probe are excluded. RSS is an approximation of current resident memory, not a process-isolated peak. |
-
-Building benchmarks requires an installed Google Benchmark CMake package:
-
-```bash
-cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release \
-  -DEXCHANGE_BUILD_TESTS=OFF -DEXCHANGE_BUILD_BENCHMARKS=ON \
-  -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF \
-  -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
-cmake --build build-bench --target exchange_benchmark \
-  exchange_gateway_benchmark exchange_recovery_benchmark -j
-./build-bench/exchange_benchmark
-./build-bench/exchange_gateway_benchmark --help
-./build-bench/exchange_recovery_benchmark 1000
-```
-
-Comparisons should retain the compiler, Release configuration, machine and storage, workload, client concurrency, and durability mode. Non-durable throughput is not a substitute for durable throughput.
-
-## Optional Agent Integrations
-
-The AgentRuntime turn pipeline is observation → provider intent → typed action → structural validation → economic constraints → execution adapter → result and metrics. The primary demo uses a fixed scripted provider. The optional DeepSeek provider parses JSON responses into the existing action space. Model output always remains advisory intent.
-
-- **DeepSeek**: `EXCHANGE_BUILD_DEEPSEEK_PROVIDER`; requires libcurl and nlohmann-json.
-- **Binance Alpha**: `EXCHANGE_BUILD_BINANCE_ALPHA_FEED`; additionally requires OpenSSL and Boost headers. The single 哈基米 symbol is resolved from Alpha public metadata. Market data is observation context only, and the feed does not fabricate a price before it receives valid data or when the data is stale. It does not mutate accounts, settle assets, or send Binance orders.
-- Both provider build options default to ON, but they do not call services automatically. `EXCHANGE_BUILD_AGENT_LIVE_SMOKE=ON` builds `exchange_agent_live_smoke`; it requires both providers and accesses real services at runtime, independently of the offline primary demo.
-
-### Experimental Multi-Agent Layer
-
-The retained AgentRuntime and tests still cover bounded multi-Agent turns, sequential observation visibility, internal trading, contract settlement, and utility/metrics; the standalone Society smoke application has been removed. `ComputeCredit` is a synthetic resource description with no production or consumption resource model. Interaction may be sparse, and a valid HOLD is also an experimental result. This project makes no claim of real emergence or a long-running autonomous society. Society research remains parked and does not drive the stable runtime baseline.
-
-## Repository Navigation and Scope
-
-- `include/` and `src/`: `matching` for matching; `accounting` for accounts, reservations, and the Ledger; `execution` for admission and the runtime; `durability` for the WAL and recovery; `gateway` and `protocol` for the networking boundary; `agent` for the typed domain, turns, and optional providers; and `replay` for matching workloads and replay.
-- `apps/`: the primary demo, TCP server, and opt-in live application.
-- `tests/`: unit, integration, and process-level boundary tests.
-- `benchmarks/`: matching, gateway, and recovery measurements.
-
-The current scope is single-node, one instrument per runtime, serialized authoritative execution, internal balances, a synchronous WAL, deterministic recovery, and bounded Agent experiments.
-
-Non-goals include production exchange deployment, distributed consensus or HA, snapshots or compaction, a generalized Agent OS, wallets or custody, on-chain or x402 settlement, a marketplace, reputation, credit or lending, generalized negotiation, and real Binance trading.
+The system runs authoritative state changes serially on a single node, with one instrument per runtime, internal account balances and settlement, and explicit durability, recovery, and AI integration boundaries. It provides no multi-node HA or general exactly-once execution, routes no real orders, and holds no assets in custody. It is not a production exchange or a general-purpose Agent orchestration platform.

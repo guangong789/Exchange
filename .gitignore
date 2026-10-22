@@ -10,7 +10,6 @@
 /cmake_install.cmake
 /CTestTestfile.cmake
 /Makefile
-/Testing/
 /_deps/
 /install_manifest.txt
 /compile_commands.json
@@ -60,4 +59,3 @@ Thumbs.db
 !.env.example
 
 docs/
-.tools/
