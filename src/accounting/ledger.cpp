@@ -18,6 +18,39 @@ namespace exchange {
         static_assert(
             std::is_nothrow_move_constructible_v<std::vector<LedgerEntry>>);
 
+        // Callers check required <= maximum; capacity is already container-bounded.
+        constexpr std::size_t ledger_history_capacity(
+            std::size_t capacity,
+            std::size_t required,
+            std::size_t maximum) noexcept {
+            if (required <= capacity) {
+                return capacity;
+            }
+            const std::size_t grown = capacity > maximum - capacity
+                ? maximum
+                : capacity * 2;
+            return required > grown ? required : grown;
+        }
+
+        // Exercise arithmetic limits without allocating a near-limit history.
+        static_assert(ledger_history_capacity(0, 0, 24) == 0);
+        static_assert(ledger_history_capacity(0, 1, 24) == 1);
+        static_assert(ledger_history_capacity(8, 8, 24) == 8);
+        static_assert(ledger_history_capacity(8, 9, 24) == 16);
+        static_assert(ledger_history_capacity(8, 20, 24) == 20);
+        static_assert(ledger_history_capacity(16, 17, 24) == 24);
+        constexpr std::size_t ledger_capacity_limit =
+            std::vector<LedgerEntry>{}.max_size();
+        static_assert(ledger_history_capacity(
+            ledger_capacity_limit - 1, ledger_capacity_limit,
+            ledger_capacity_limit) == ledger_capacity_limit);
+        constexpr std::size_t size_limit =
+            std::numeric_limits<std::size_t>::max();
+        static_assert(ledger_history_capacity(
+            size_limit / 2 + 1, size_limit / 2 + 2, size_limit) == size_limit);
+        static_assert(ledger_history_capacity(
+            size_limit - 1, size_limit, size_limit) == size_limit);
+
         [[nodiscard]] bool is_valid_bucket(BalanceBucket bucket) noexcept {
             return bucket == BalanceBucket::Available
                 || bucket == BalanceBucket::Reserved;
@@ -571,7 +604,12 @@ namespace exchange {
         if (staged.size() > entries_.max_size() - entries_.size()) {
             throw std::length_error("Ledger entry capacity overflow");
         }
-        entries_.reserve(entries_.size() + staged.size());
+        const std::size_t required = entries_.size() + staged.size();
+        if (required > entries_.capacity()) {
+            // Allocate during prepare so commit stays allocation-free/noexcept.
+            entries_.reserve(ledger_history_capacity(
+                entries_.capacity(), required, entries_.max_size()));
+        }
 
         const bool sequence_exhausted_after_commit =
             staged.back().sequence == maximum;

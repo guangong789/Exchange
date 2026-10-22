@@ -694,6 +694,122 @@ namespace exchange {
             EXPECT_EQ(ledger.entries()[0].sequence, 1U);
         }
 
+        TEST(LedgerPreparedBatchTest,
+             RepeatedSmallBatchesPreserveHistoryAndReplayedBalances) {
+            static_assert(noexcept(
+                std::declval<Ledger::PreparedBatch&>().commit()));
+            static_assert(std::is_nothrow_move_constructible_v<LedgerEntry>);
+
+            Ledger ledger;
+            AccountStore actual;
+            AccountStore replayed;
+            for (AccountStore* accounts : {&actual, &replayed}) {
+                ASSERT_TRUE(accounts->create_account(1));
+                accounts->fund(1, 10, 100'000);
+            }
+            EXPECT_EQ(ledger.entries().capacity(), 0U);
+            std::vector<LedgerEntry> expected;
+            std::size_t growth_count = 0;
+            for (OrderId id = 1; id <= 256; ++id) {
+                const Amount amount = static_cast<Amount>(id % 17 + 2);
+                ASSERT_EQ(actual.reserve(1, 10, amount), ReserveResult::Success);
+                actual.release(1, 10, amount / 2);
+                for (const LedgerTransaction& transaction : {
+                         reserve_transaction(id, amount),
+                         release_transaction(id, amount / 2)}) {
+                    const std::size_t old_capacity = ledger.entries().capacity();
+                    auto prepared = ledger.prepare_batch({transaction});
+                    ASSERT_EQ(ledger.entries().size(), expected.size());
+                    const std::size_t capacity = ledger.entries().capacity();
+                    if (capacity > old_capacity) {
+                        ++growth_count;
+                        EXPECT_LT(capacity, 2 * (expected.size() + 1));
+                    }
+                    const LedgerEntry* const data = ledger.entries().data();
+                    prepared.commit();
+                    EXPECT_EQ(ledger.entries().data(), data);
+                    EXPECT_EQ(ledger.entries().capacity(), capacity);
+                    expected.push_back(LedgerEntry{
+                        static_cast<LedgerSequence>(expected.size() + 1),
+                        transaction});
+                }
+            }
+            EXPECT_LE(growth_count, 16U);
+            ASSERT_EQ(ledger.entries().size(), 512U);
+            EXPECT_EQ(ledger.entries(), expected);
+            replay_ledger_into_account_store(ledger, replayed);
+            expect_balances_equal(actual, replayed, {1}, {10});
+        }
+
+        TEST(LedgerPreparedBatchTest,
+             LargeBatchExceedingOneGrowthStepPreservesOrderAndCommitStorage) {
+            Ledger ledger;
+            ledger.append(reserve_transaction(1));
+            std::vector<LedgerEntry> expected = ledger.entries();
+            const std::size_t batch_size = ledger.entries().capacity() * 3 + 7;
+            std::vector<LedgerTransaction> transactions;
+            for (std::size_t index = 0; index < batch_size; ++index) {
+                transactions.push_back(reserve_transaction(index + 2));
+                expected.push_back(LedgerEntry{
+                    static_cast<LedgerSequence>(index + 2), transactions.back()});
+            }
+            auto prepared = ledger.prepare_batch(std::move(transactions));
+            ASSERT_EQ(ledger.entries().size(), 1U);
+            EXPECT_EQ(ledger.entries().front(), expected.front());
+            const std::size_t capacity = ledger.entries().capacity();
+            EXPECT_GE(capacity, expected.size());
+            const LedgerEntry* const data = ledger.entries().data();
+            prepared.commit();
+            EXPECT_EQ(ledger.entries(), expected);
+            EXPECT_EQ(ledger.entries().capacity(), capacity);
+            EXPECT_EQ(ledger.entries().data(), data);
+        }
+
+        TEST(LedgerPreparedBatchTest,
+             AbandonedGrowthPreservesHistoryAndReusesCapacityWithoutSequenceGap) {
+            Ledger ledger;
+            ledger.append(reserve_transaction(1));
+            const auto history = ledger.entries();
+            const std::size_t old_capacity = ledger.entries().capacity();
+            {
+                auto prepared = ledger.prepare_batch(
+                    std::vector<LedgerTransaction>(
+                        old_capacity + 1, reserve_transaction(2)));
+                EXPECT_GT(ledger.entries().capacity(), old_capacity);
+                EXPECT_EQ(ledger.entries(), history);
+            }
+            EXPECT_EQ(ledger.entries(), history);
+            const std::size_t capacity = ledger.entries().capacity();
+            const LedgerEntry* const data = ledger.entries().data();
+            auto next = ledger.prepare_batch({release_transaction(1)});
+            EXPECT_EQ(ledger.entries().capacity(), capacity);
+            EXPECT_EQ(ledger.entries().data(), data);
+            EXPECT_EQ(ledger.entries(), history);
+            next.commit();
+            EXPECT_EQ(ledger.entries().data(), data);
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(ledger.entries()[1], (LedgerEntry{2, release_transaction(1)}));
+        }
+
+        TEST(LedgerPreparedBatchTest,
+             InvalidGrowthSizedBatchPreservesHistoryCapacityAndNextSequence) {
+            Ledger ledger;
+            ledger.append(reserve_transaction(1));
+            const auto history = ledger.entries();
+            const std::size_t capacity = ledger.entries().capacity();
+            std::vector<LedgerTransaction> transactions(
+                capacity + 1, reserve_transaction(2));
+            ++transactions.back().postings[1].delta;
+            EXPECT_THROW(
+                static_cast<void>(ledger.prepare_batch(std::move(transactions))),
+                std::invalid_argument);
+            EXPECT_EQ(ledger.entries(), history);
+            EXPECT_EQ(ledger.entries().capacity(), capacity);
+            ledger.append(release_transaction(1));
+            ASSERT_EQ(ledger.entries().size(), 2U);
+            EXPECT_EQ(ledger.entries()[1], (LedgerEntry{2, release_transaction(1)}));
+        }
+
         TEST(LedgerTest, AllowsSameAccountTradeWhileBalancingEachAsset) {
             Ledger ledger;
             LedgerTransaction transaction = trade_transaction();
