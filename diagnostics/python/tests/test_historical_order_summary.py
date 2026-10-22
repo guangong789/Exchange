@@ -2,7 +2,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from diagnostics.python.diagnostic_provider import FakeDiagnosticProvider, ProviderError, ProviderTimeoutError
 from diagnostics.python.diagnostic_runner import RunStatus
@@ -31,6 +31,20 @@ class HistoricalSummaryTest(unittest.TestCase):
         self.assertEqual(result.status, RunStatus.ACCEPTED)
         self.assertEqual(result.historical_summary.facts.remaining_quantity, 2)
         self.assertNotIn("cause", result.to_dict()["historical_summary"])
+
+    def test_deeply_nested_completion_remains_a_controlled_parse_failure(self):
+        raw = "[" * 2000 + "0" + "]" * 2000
+        parsed = parse_historical_summary_json(raw)
+        self.assertIsNone(parsed.summary)
+        self.assertEqual(parsed.errors[0].category, "schema_error")
+        provider = Mock(wraps=FakeDiagnosticProvider(raw))
+        with patch("diagnostics.python.historical_summary_runner.factual_historical_summary") as render:
+            result = run_historical_summary(json.dumps(self.evidence), provider)
+            render.assert_not_called()
+        self.assertEqual(result.status, RunStatus.PARSE_ERROR)
+        self.assertIsNone(result.historical_summary)
+        self.assertEqual(result.raw_provider_output, raw)
+        provider.complete.assert_called_once()
 
     def test_fully_filled_and_unavailable_remaining_are_distinct(self):
         filled = json.loads((FIXTURES / "d2c_historical_filled.json").read_text())

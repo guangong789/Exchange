@@ -96,9 +96,34 @@ class PartialFillDiagnosisTest(unittest.TestCase):
                 self.proposal["evidence_refs"] = [{"kind": kind, "id": identity}]
                 self.assert_error(self.validate(), ErrorCategory.INVALID_EVIDENCE_REFERENCE)
 
-    def test_opposing_order_reference_resolves(self):
+    def test_references_are_members_not_a_required_support_set(self):
+        ordinary = self.proposal["evidence_refs"]
+        for cause in Cause:
+            for refs in (ordinary, [{"kind": "order", "id": 2}],
+                         [ref for ref in ordinary if ref["kind"] != "ledger_sequence"],
+                         [ref for ref in ordinary if ref["kind"] != "wal_sequence"],
+                         [ordinary[0], ordinary[0]]):
+                with self.subTest(cause=cause, refs=refs):
+                    self.proposal.update(cause=cause.value, evidence_refs=refs)
+                    parsed = parse_diagnosis_json(json.dumps(self.proposal))
+                    self.assertEqual(parsed.errors, ())
+                    self.assertEqual(
+                        [(ref.kind.value, ref.id) for ref in parsed.diagnosis.evidence_refs],
+                        [(ref["kind"], ref["id"]) for ref in refs],
+                    )
+                    self.assertTrue(validate_diagnosis(parsed.diagnosis, self.evidence).valid)
+
+    def test_navigational_reference_cannot_substitute_for_fact_or_cause_grounding(self):
         self.proposal["evidence_refs"] = [{"kind": "order", "id": 2}]
-        self.assertTrue(self.validate().valid)
+        for cause in Cause:
+            with self.subTest(cause=cause):
+                self.proposal["cause"] = cause.value
+                self.proposal["facts"]["matched_quantity"] = 4
+                self.assert_error(self.validate(), ErrorCategory.CONTRADICTORY_FACT)
+        self.proposal["facts"]["matched_quantity"] = 2
+        self.proposal["cause"] = Cause.INSUFFICIENT_EXECUTABLE_LIQUIDITY.value
+        self.evidence["pre_execution_book"]["total_executable_quantity"] = 4
+        self.assert_error(self.validate(), ErrorCategory.UNSUPPORTED_CAUSE)
 
     def test_unknown_reference_kind_is_schema_error(self):
         self.proposal["evidence_refs"] = [{"kind": "trade_id", "id": 1}]
@@ -175,6 +200,17 @@ class PartialFillDiagnosisTest(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assert_error(validate_json_documents(self.evidence_json, raw),
                                   ErrorCategory.SCHEMA_ERROR)
+
+    def test_deeply_nested_json_returns_schema_error(self):
+        # Well-formed JSON beyond the default decoder stack, not a syntax error.
+        raw = "[" * 2000 + "0" + "]" * 2000
+        with self.assertRaises(RecursionError):
+            json.loads(raw)
+        parsed = parse_diagnosis_json(raw)
+        self.assertIsNone(parsed.diagnosis)
+        self.assertEqual(len(parsed.errors), 1)
+        self.assertEqual(parsed.errors[0].category, ErrorCategory.SCHEMA_ERROR)
+        self.assertEqual(parsed.errors[0].path, "diagnosis")
 
     def test_missing_or_mistyped_evidence_is_unsupported_not_a_contradiction(self):
         for value in (None, True, 2.0, "2", -1):

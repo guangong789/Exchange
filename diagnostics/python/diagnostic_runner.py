@@ -1,6 +1,6 @@
 """Synchronous, one-call orchestration of D1-A parsing and grounding."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -8,7 +8,7 @@ from .diagnostic_provider import (
     DiagnosticProvider, ProviderError, ProviderTimeoutError,
 )
 from .partial_fill_diagnosis import (
-    Cause, ErrorCategory, PartialFillDiagnosis, ReferenceKind, RemainingState,
+    Cause, DiagnosisFacts, ErrorCategory, PartialFillDiagnosis, ReferenceKind, RemainingState,
     ValidationError, ValidationResult, _load_json, parse_diagnosis_json,
     validate_diagnosis,
 )
@@ -25,8 +25,8 @@ class RunStatus(str, Enum):
 @dataclass(frozen=True)
 class DiagnosticRunResult:
     status: RunStatus
-    # Only accepted results expose a diagnosis. Raw rejected text is diagnostic
-    # material, not trusted claims. Summary prose is never fact-checked.
+    # Only accepted results expose grounded claims and locally rendered prose.
+    # Original model prose remains untrusted in raw_provider_output.
     diagnosis: PartialFillDiagnosis | None = None
     errors: tuple[ValidationError, ...] = ()
     raw_provider_output: str | None = None
@@ -77,6 +77,22 @@ Supplied D0 evidence JSON:
 """
 
 
+def render_canonical_partial_fill_summary(facts: DiagnosisFacts, cause: Cause) -> str:
+    """Render grounded D0 claims; the caller must parse and validate first."""
+    summary = (
+        f"In the fixed D0 execution-time scenario, order {facts.order_id} submitted "
+        f"{facts.submitted_quantity} units at limit price {facts.limit_price}; "
+        f"{facts.matched_quantity} units matched and {facts.remaining_quantity} remain, "
+        f"with remaining state {facts.remaining_state.value}. "
+    )
+    if cause == Cause.INSUFFICIENT_EXECUTABLE_LIQUIDITY:
+        return summary + (
+            "The execution-time evidence supports insufficient executable liquidity "
+            "at the limit price."
+        )
+    return summary + "No supported cause is asserted in this diagnosis."
+
+
 def run_diagnosis(evidence_json: str, provider: DiagnosticProvider) -> DiagnosticRunResult:
     # Reuse D1-A's strict decoder, including duplicate-key/NaN rejection.
     # This is an input check, not a second implementation of evidence grounding.
@@ -110,6 +126,8 @@ def run_diagnosis(evidence_json: str, provider: DiagnosticProvider) -> Diagnosti
             RunStatus.VALIDATION_REJECTED, errors=validation.errors,
             raw_provider_output=raw,
         )
+    trusted = replace(parsed.diagnosis, summary=render_canonical_partial_fill_summary(
+        parsed.diagnosis.facts, parsed.diagnosis.cause))
     return DiagnosticRunResult(
-        RunStatus.ACCEPTED, diagnosis=parsed.diagnosis, raw_provider_output=raw,
+        RunStatus.ACCEPTED, diagnosis=trusted, raw_provider_output=raw,
     )

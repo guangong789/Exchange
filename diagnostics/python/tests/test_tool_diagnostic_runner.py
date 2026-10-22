@@ -1,6 +1,8 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -121,6 +123,99 @@ class ToolDiagnosticRunnerTest(unittest.TestCase):
         self.assertEqual(result.diagnosis_run, expected)
         self.assertEqual(result.to_dict()["selected_tool"]["arguments"], {"order_id": 3})
         self.assertEqual(result.to_dict()["diagnosis"]["facts"]["matched_quantity"], 2)
+
+    def test_tool_runner_reuses_canonical_prose_and_keeps_raw_output(self):
+        expected = run_diagnosis(json.dumps(get_partial_fill_evidence(3)),
+                                 FakeDiagnosticProvider(self.valid)).diagnosis
+        for summary in ("The client definitely received Accepted.",
+                        "Order 3 was cancelled and all reserved funds were released.",
+                        "A network outage caused the partial fill."):
+            with self.subTest(summary=summary):
+                proposal = json.loads(self.valid)
+                proposal["summary"] = summary
+                raw = json.dumps(proposal)
+                provider = Mock(spec=ToolDiagnosticProvider, wraps=self.fake(raw=raw))
+                with patch("diagnostics.python.tool_diagnostic_runner.get_partial_fill_evidence",
+                           wraps=get_partial_fill_evidence) as lookup:
+                    result = run_tool_diagnosis(QUESTION, provider)
+                    lookup.assert_called_once()
+                self.assertEqual(result.status, RunStatus.ACCEPTED)
+                self.assertEqual(result.diagnosis_run.diagnosis, expected)
+                self.assertNotIn(summary, result.to_dict()["diagnosis"]["summary"])
+                self.assertEqual(result.to_dict()["raw_provider_output"], raw)
+                provider.select_evidence_tool.assert_called_once()
+                provider.complete_with_evidence_tool.assert_called_once()
+
+    def test_deeply_nested_final_completion_is_parse_error_without_retry(self):
+        raw = "[" * 2000 + "0" + "]" * 2000
+        provider = Mock(spec=ToolDiagnosticProvider, wraps=self.fake(raw=raw))
+        with patch("diagnostics.python.tool_diagnostic_runner.get_partial_fill_evidence",
+                   wraps=get_partial_fill_evidence) as lookup, \
+                patch("diagnostics.python.diagnostic_runner.validate_diagnosis") as validate, \
+                patch("diagnostics.python.diagnostic_runner.render_canonical_partial_fill_summary") as render:
+            result = run_tool_diagnosis(QUESTION, provider)
+            lookup.assert_called_once()
+            self.assertEqual(lookup.call_args.args, (3,))
+            validate.assert_not_called()
+            render.assert_not_called()
+        self.assertEqual(result.status, RunStatus.PARSE_ERROR)
+        self.assertIsNone(result.diagnosis_run.diagnosis)
+        self.assertIsNone(result.to_dict()["diagnosis"])
+        self.assertEqual(result.diagnosis_run.raw_provider_output, raw)
+        self.assertIsNone(result.tool_error)
+        provider.select_evidence_tool.assert_called_once_with(QUESTION)
+        provider.complete_with_evidence_tool.assert_called_once()
+
+    def test_reference_membership_contract_matches_direct_runner(self):
+        ordinary = json.loads(self.valid)["evidence_refs"]
+        for cause in ("insufficient_executable_liquidity", "unsupported_by_evidence"):
+            for refs, status in (
+                ([{"kind": "order", "id": 2}], RunStatus.ACCEPTED),
+                ([ref for ref in ordinary if ref["kind"] != "ledger_sequence"], RunStatus.ACCEPTED),
+                ([ordinary[0], ordinary[0]], RunStatus.ACCEPTED),
+                ([{"kind": "ledger_sequence", "id": 999}], RunStatus.VALIDATION_REJECTED),
+                ([], RunStatus.PARSE_ERROR),
+            ):
+                with self.subTest(cause=cause, refs=refs):
+                    proposal = json.loads(self.valid)
+                    proposal.update(cause=cause, evidence_refs=refs)
+                    raw = json.dumps(proposal)
+                    direct = run_diagnosis(json.dumps(get_partial_fill_evidence(3)),
+                                           FakeDiagnosticProvider(raw))
+                    provider = Mock(spec=ToolDiagnosticProvider, wraps=self.fake(raw=raw))
+                    with patch("diagnostics.python.tool_diagnostic_runner.get_partial_fill_evidence",
+                               wraps=get_partial_fill_evidence) as lookup:
+                        result = run_tool_diagnosis(QUESTION, provider)
+                        lookup.assert_called_once()
+                    self.assertEqual(result.status, status)
+                    self.assertEqual(result.diagnosis_run, direct)
+                    provider.select_evidence_tool.assert_called_once()
+                    provider.complete_with_evidence_tool.assert_called_once()
+
+    def test_tool_cli_returns_the_direct_runners_canonical_summary(self):
+        proposal = json.loads(self.valid)
+        proposal["summary"] = "The client definitely received Accepted; all reserved funds were released."
+        proposal["evidence_refs"] = [{"kind": "order", "id": 2}]
+        raw = json.dumps(proposal)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            selection_file = path / "selection.json"
+            response_file = path / "response.json"
+            selection_file.write_text(json.dumps(selection()))
+            response_file.write_text(raw)
+            result = subprocess.run([
+                sys.executable, "-m", "diagnostics.python.run_tool_diagnosis", QUESTION,
+                "--evidence-source", "fixture", "--selection-file", str(selection_file),
+                "--response-file", str(response_file),
+            ], cwd=Path(__file__).resolve().parents[3], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        expected = run_diagnosis(json.dumps(get_partial_fill_evidence(3)),
+                                 FakeDiagnosticProvider(raw)).to_dict()["diagnosis"]
+        self.assertEqual(output["status"], "accepted")
+        self.assertEqual(output["diagnosis"], json.loads(json.dumps(expected)))
+        self.assertEqual(output["diagnosis"]["evidence_refs"], proposal["evidence_refs"])
+        self.assertEqual(output["raw_provider_output"], raw)
 
     def test_wrong_tool_name_is_rejected_before_lookup(self):
         message = selection()

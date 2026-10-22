@@ -53,6 +53,7 @@ class PartialFillDiagnosis:
     cause: Cause
     summary: str
     facts: DiagnosisFacts
+    # Navigational identities in the supplied D0 package, not a complete proof set.
     evidence_refs: tuple[EvidenceReference, ...]
 
 
@@ -159,7 +160,7 @@ def parse_diagnosis_json(raw: str) -> DiagnosisParseResult:
             "partial_fill", cause, root["summary"], typed_facts,
             tuple(typed_refs),
         ))
-    except (ValueError, TypeError) as error:
+    except (ValueError, TypeError, RecursionError) as error:
         return DiagnosisParseResult(None, (ValidationError(
             ErrorCategory.SCHEMA_ERROR, "diagnosis", str(error),
         ),))
@@ -213,6 +214,8 @@ def validate_diagnosis(
     unsupported_by_evidence abstains from a cause claim; it still requires
     every factual claim and reference to be grounded. D0 does not establish
     filled/cancelled lifecycle states merely by the absence of a resting order.
+    References require membership only, not coverage or uniqueness; facts and
+    cause are checked against the evidence independently of selected references.
     """
     if not isinstance(evidence, dict) or evidence.get("case_type") != "partial_fill":
         return ValidationResult((ValidationError(
