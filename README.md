@@ -8,10 +8,36 @@
 
 ## 架构
 
-```text
-客户端 / Agent → 确定性执行（可选 WAL） → 交易 / 合约 / 记账
+```mermaid
+flowchart TB
+    subgraph execution_path["执行 · 权威状态变更"]
+        direction LR
+        client["客户端 /<br/>类型化 Agent 动作"] --> admission["确定性准入"]
+        admission -->|持久化| wal["同步 WAL"]
+        admission -->|非持久化| apply["交易 / 合约执行"]
+        wal --> apply
+        apply --> state["账户 / 订单<br/>合约 / Ledger"]
+    end
 
-模型声明 + 执行证据 → 校验 → 本地可信摘要
+    subgraph diagnostics_path["诊断 · 只读证据解释"]
+        direction LR
+        claims["用户问题 / 模型声明"] --> validation["Schema / 证据校验"]
+        evidence["C++ 证据<br/>执行快照 / 离线 WAL 重放"] --> validation
+        validation --> summary["本地生成的可信摘要"]
+    end
+
+    execution_path ~~~ diagnostics_path
+
+    classDef intent fill:#fff0df,stroke:#bf762e,color:#754213
+    classDef execution fill:#e8f0fc,stroke:#6486b5,color:#203e65
+    classDef state fill:#284f7c,stroke:#1c3d62,color:#ffffff
+    classDef evidence fill:#edf7ef,stroke:#7ba98b,color:#2c5438
+    classDef trusted fill:#d9eeea,stroke:#398579,color:#20574e
+    class client,claims intent
+    class admission,wal,apply execution
+    class state state
+    class evidence evidence
+    class validation,summary trusted
 ```
 
 TCP I/O 可以并发，权威状态修改保持串行；Agent 也可以直接调用 runtime，不必经过 TCP。持久化模式在应用命令前完成 WAL 同步。诊断单独读取证据，不修改权威状态。
@@ -56,7 +82,7 @@ WAL 接收也不等于业务成功：资金不足等交易拒绝可能发生在�
 
 ## 快速开始
 
-Linux / WSL2 需要 C++20 编译器、CMake 3.20+、nlohmann-json CMake package 和 GoogleTest（未安装时 CMake 通过 FetchContent 下载）。关闭外部 provider 仍需 nlohmann-json。
+Linux / WSL2 需要 C++20 编译器、CMake 3.20+、nlohmann-json CMake package。构建测试时还需 GoogleTest（未安装时 CMake 通过 FetchContent 下载）；脚本默认模式关闭测试。关闭外部 provider 仍需 nlohmann-json。
 
 无需实时模型或外部 API，[主 demo](apps/exchange_runtime_demo/main.cpp)使用脚本动作和真实 WAL，展示交易、合约结算、响应交付前的进程崩溃与精确恢复。在仓库根目录运行：
 
@@ -66,6 +92,8 @@ cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ./build/exchange_runtime_demo
 ```
+
+也可运行 `./quickstart.sh` 构建并演示，或使用 `./quickstart.sh test` 运行完整 C++ 测试。
 
 上述配置关闭可选外部服务集成，主 demo 不需要实时行情或模型 API。Python 诊断测试需 Python 3.10+：`python3 -m unittest discover -s diagnostics/python/tests -v`；默认不调用实时 API，显式 opt-in 的历史 C++ 集成测试默认跳过。
 

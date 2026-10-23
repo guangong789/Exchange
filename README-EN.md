@@ -8,10 +8,36 @@ A C++20 deterministic execution system for account-backed trading, bilateral con
 
 ## Architecture
 
-```text
-Client / Agent → Deterministic execution (optional WAL) → Trading / contracts / accounting
+```mermaid
+flowchart TB
+    subgraph execution_path["Execution · authoritative state changes"]
+        direction LR
+        client["Client / typed<br/>Agent action"] --> admission["Deterministic<br/>admission"]
+        admission -->|Durable| wal["Synchronous<br/>WAL"]
+        admission -->|Non-durable| apply["Trading /<br/>contract execution"]
+        wal --> apply
+        apply --> state["Accounts / orders<br/>Contracts / Ledger"]
+    end
 
-Model claims + execution evidence → Validation → Local trusted summary
+    subgraph diagnostics_path["Diagnostics · read-only evidence interpretation"]
+        direction LR
+        claims["User question /<br/>model claims"] --> validation["Schema /<br/>evidence grounding"]
+        evidence["C++ evidence<br/>Execution snapshots<br/>Offline WAL replay"] --> validation
+        validation --> summary["Locally rendered<br/>trusted summary"]
+    end
+
+    execution_path ~~~ diagnostics_path
+
+    classDef intent fill:#fff0df,stroke:#bf762e,color:#754213
+    classDef execution fill:#e8f0fc,stroke:#6486b5,color:#203e65
+    classDef state fill:#284f7c,stroke:#1c3d62,color:#ffffff
+    classDef evidence fill:#edf7ef,stroke:#7ba98b,color:#2c5438
+    classDef trusted fill:#d9eeea,stroke:#398579,color:#20574e
+    class client,claims intent
+    class admission,wal,apply execution
+    class state state
+    class evidence evidence
+    class validation,summary trusted
 ```
 
 TCP I/O can be concurrent while authoritative mutations remain serial. Agents can also call the runtime directly, without TCP. Durable mode synchronizes the WAL before applying commands; diagnostics reads evidence separately and does not mutate authoritative state.
@@ -56,7 +82,7 @@ Previously reported paired measurements showed **21,204 → 51,550 commands/s (a
 
 ## Quick Start
 
-On Linux / WSL2, use a C++20 compiler, CMake 3.20+, the nlohmann-json CMake package, and GoogleTest (downloaded through CMake FetchContent if unavailable). Disabling external providers does not remove the nlohmann-json dependency.
+On Linux / WSL2, use a C++20 compiler, CMake 3.20+, and the nlohmann-json CMake package. Building tests also requires GoogleTest (downloaded through CMake FetchContent if unavailable); the script's default mode disables tests. Disabling external providers does not remove the nlohmann-json dependency.
 
 Without live models or external APIs, the [main demo](apps/exchange_runtime_demo/main.cpp) uses scripted actions and a real WAL to demonstrate trading, contract settlement, a process crash before response delivery, and exact recovery. Run from the repository root:
 
@@ -66,6 +92,8 @@ cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ./build/exchange_runtime_demo
 ```
+
+Alternatively, run `./quickstart.sh` to build and launch the demo, or `./quickstart.sh test` to run the full C++ test suite.
 
 This configuration disables optional external integrations; the main demo does not require live market data or a model API. Python diagnostics tests require Python 3.10+: `python3 -m unittest discover -s diagnostics/python/tests -v`. They make no live API calls by default and skip explicitly opt-in historical C++ integration tests.
 

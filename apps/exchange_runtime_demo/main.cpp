@@ -221,7 +221,7 @@ namespace {
         std::cout << label << " account=" << account_id
                   << " base=" << base.available << "/" << base.reserved
                   << " quote=" << quote.available << "/" << quote.reserved
-                  << " (available/reserved)\n";
+                  << "\n";
     }
 
     std::string_view contract_state_name(exchange::ContractState state) {
@@ -445,7 +445,8 @@ namespace {
 
         std::cout << "Deterministic Agent Execution Runtime\n"
                   << "Trust boundary: intent -> validate -> journal -> apply\n"
-                  << "All assets and settlement in this demo are internal.\n\n";
+                  << "Scripted typed actions; all assets and settlement are internal.\n"
+                  << "Balances below use available/reserved.\n\n";
 
         std::unique_ptr<exchange::TradingRuntime> runtime =
             exchange::TradingRuntime::create_durable(
@@ -464,7 +465,7 @@ namespace {
             runtime->executor(),
             runtime->contract_executor()};
 
-        std::cout << "=== Stage 1: Valid Typed Trading Actions ===\n";
+        std::cout << "[1/6] Trade and reserve\n";
         FixedDecisionProvider seller{
             exchange::SubmitOrderAction{exchange::Side::Sell, 100, 2}};
         FixedDecisionProvider buyer{
@@ -490,20 +491,18 @@ namespace {
                 && buy_result.status == exchange::AgentSubmitStatus::Accepted,
             "scripted trading action was not executed");
         const exchange::Trade& trade = find_trade(runtime->ledger());
-        std::cout << "Intent: agent=" << seller_agent
-                  << " submit SELL price=100 quantity=2\n"
-                  << "Result: Accepted order_id=" << sell_result.order_id
+        std::cout << "  Action: agent=" << seller_agent
+                  << " SELL price=100 quantity=2 -> Accepted order=" << sell_result.order_id
                   << "\n"
-                  << "Intent: agent=" << buyer_agent
-                  << " submit BUY price=100 quantity=1\n"
-                  << "Result: Accepted order_id=" << buy_result.order_id
+                  << "          agent=" << buyer_agent
+                  << " BUY price=100 quantity=1 -> Accepted order=" << buy_result.order_id
                   << "\n"
-                  << "Trade: buy_order=" << trade.buy_order_id
+                  << "  Result: trade buy_order=" << trade.buy_order_id
                   << " sell_order=" << trade.sell_order_id
                   << " price=" << trade.price
                   << " quantity=" << trade.quantity << "\n";
-        print_account("Buyer", *runtime, buyer_account);
-        print_account("Seller", *runtime, seller_account);
+        print_account("  State:  buyer ", *runtime, buyer_account);
+        print_account("          seller", *runtime, seller_account);
         const auto resting = runtime->order_book().find_order(1);
         const auto resting_reservation = runtime->reservations().find(1);
         require(
@@ -511,14 +510,16 @@ namespace {
                 && resting_reservation.has_value()
                 && resting_reservation->remaining_amount == 1,
             "expected partially filled resting order is missing");
-        std::cout << "Resting order: id=1 remaining=1 reservation=1 base\n"
-                  << "Ledger: entries=" << runtime->ledger().entries().size()
+        std::cout << "          order=" << resting->id
+                  << " remaining=" << resting->quantity
+                  << " reserved_base=" << resting_reservation->remaining_amount
+                  << "\n          Ledger entries=" << runtime->ledger().entries().size()
                   << " last_sequence="
                   << runtime->ledger().entries().back().sequence
-                  << "\nWAL: records=" << scan_wal(wal_path).records.size()
-                  << "\n\n";
+                  << "; WAL records=" << scan_wal(wal_path).records.size()
+                  << "\n  Verified: expected resting remainder and reservation matched.\n\n";
 
-        std::cout << "=== Stage 2: Invalid Intent Rejected ===\n";
+        std::cout << "[2/6] Reject invalid intent\n";
         const StateSummary before_rejection = summarize(*runtime);
         const std::size_t wal_before_rejection =
             scan_wal(wal_path).records.size();
@@ -553,15 +554,16 @@ namespace {
             before_rejection == after_rejection
                 && wal_before_rejection == wal_after_rejection,
             "rejected intent mutated authoritative state");
-        std::cout << "Intent: agent=" << buyer_agent
-                  << " submit BUY price=101 quantity=1, max_buy_price=100\n"
-                  << "Result: " << turn_status_name(rejected.status)
-                  << " reason=BuyPriceExceeded\n"
-                  << "Authoritative state unchanged: true\n"
-                  << "WAL records: " << wal_before_rejection << " -> "
-                  << wal_after_rejection << "\n\n";
+        std::cout << "  Action: agent=" << buyer_agent
+                  << " BUY price=101 quantity=1; max_buy_price="
+                  << *restricted.max_buy_price << "\n"
+                  << "  Result: " << turn_status_name(rejected.status)
+                  << " / BuyPriceExceeded\n"
+                  << "  State:  WAL records=" << wal_before_rejection << " -> "
+                  << wal_after_rejection
+                  << "\n  Verified: authoritative state snapshot and WAL count unchanged.\n\n";
 
-        std::cout << "=== Stage 3: Durable Bilateral Contract Settlement ===\n";
+        std::cout << "[3/6] Settle an internal contract\n";
         const exchange::ContractTerms terms{
             buyer_agent,
             seller_agent,
@@ -620,50 +622,52 @@ namespace {
         const auto& settlement_metadata = std::get<
             exchange::ContractSettlementLedgerMetadata>(
             settlement.transaction.metadata);
-        std::cout << "Agents: proposer/payer=" << buyer_agent
-                  << " counterparty/payee=" << seller_agent << "\n"
-                  << "Contract: id=" << contract_id
-                  << " internal_quote=300 resource=ComputeCredit quantity=5\n"
-                  << "Lifecycle: "
+        std::cout << "  Action: contract=" << contract_id
+                  << " proposer/payer=" << contract.proposer
+                  << " counterparty/payee=" << contract.counterparty << "\n"
+                  << "          internal_quote=" << contract.terms.quote_payment_amount
+                  << " resource=ComputeCredit quantity=" << contract.terms.resource_quantity << "\n"
+                  << "  Result: "
                   << contract_state_name(state_after_proposal->state) << " -> "
                   << contract_state_name(accepted_state) << " -> "
                   << contract_state_name(fulfilled_state) << " -> "
                   << contract_state_name(contract.state) << "\n"
-                  << "Obligations: resource_fulfilled="
+                  << "          resource_fulfilled="
                   << std::boolalpha
                   << contract.resource_delivery_obligation.fulfilled
                   << " payment_fulfilled="
                   << contract.payment_obligation.fulfilled << "\n"
-                  << "Payer quote: " << payer_before.available << " -> "
+                  << "  State:  payer quote=" << payer_before.available << " -> "
                   << balance(*runtime, buyer_account, instrument.quote_asset)
                          .available
-                  << "\nPayee quote: " << payee_before.available << " -> "
+                  << "; payee quote=" << payee_before.available << " -> "
                   << balance(*runtime, seller_account, instrument.quote_asset)
                          .available
-                  << "\nLedger settlement: sequence=" << settlement.sequence
-                  << " contract_id=" << settlement_metadata.contract_id
+                  << "\n          Ledger settlement sequence=" << settlement.sequence
+                  << " contract=" << settlement_metadata.contract_id
                   << " payer_account=" << settlement_metadata.payer_account_id
                   << " payee_account=" << settlement_metadata.payee_account_id
-                  << "\nWAL: records=" << scan_wal(wal_path).records.size()
-                  << "\n\n";
+                  << "\n          WAL records=" << scan_wal(wal_path).records.size()
+                  << "\n  Verified: all four contract actions returned Success.\n\n";
 
         runtime.reset();
 
-        std::cout << "=== Stage 4: Durable Command, Ambiguous Response, Crash ===\n"
-                  << "Application submits request_id=" << ambiguous_request_id
+        std::cout << "[4/6] Crash before response delivery\n"
+                  << "  Action: request_id=" << ambiguous_request_id
                   << " account=" << seller_account
                   << " SELL price=110 quantity=2\n";
         execute_ambiguous_request_then_crash(wal_path);
         const exchange::WalScanResult after_crash = scan_wal(wal_path);
         require(after_crash.records.size() == 7, "crash command is not durable");
-        std::cout << "Durable executor completed the command.\n"
-                  << "Business response delivered: false\n"
-                  << "Process terminated with SIGKILL.\n"
-                  << "WAL after crash: records=" << after_crash.records.size()
+        std::cout << "  Result: durable executor completed the command\n"
+                  << "          business response delivered=false\n"
+                  << "          child terminated with SIGKILL\n"
+                  << "  State:  WAL records=" << after_crash.records.size()
                   << " last_sequence=" << after_crash.records.back().sequence
-                  << "\n\n";
+                  << "\n  Verified: durable checkpoint, response EOF, SIGKILL and WAL checks passed.\n\n";
 
-        std::cout << "=== Stage 5: Restart and Exact Recovery ===\n";
+        std::cout << "[5/6] Restart from bootstrap + WAL\n"
+                  << "  Action: create a fresh runtime from the same bootstrap and WAL\n";
         std::unique_ptr<exchange::TradingRuntime> recovered =
             exchange::TradingRuntime::create_durable(
                 instrument, wal_path, initial_state);
@@ -696,27 +700,32 @@ namespace {
                 && balance(*recovered, seller_account, instrument.quote_asset)
                     == exchange::Balance{500, 0},
             "recovered authoritative state does not match expected state");
-        std::cout << "Recovered orders: id=1 remaining=1, id=3 remaining=2\n"
-                  << "Recovered reservations: order=1 amount=1, order=3 amount=2\n";
-        print_account("Recovered buyer", *recovered, buyer_account);
-        print_account("Recovered seller", *recovered, seller_account);
-        std::cout << "Recovered contract: id=" << contract_id
+        std::cout << "  State:  order=" << recovered_order_1->id
+                  << " remaining=" << recovered_order_1->quantity
+                  << " reserved_base=" << recovered_reservation_1->remaining_amount
+                  << "\n          order=" << recovered_order_3->id
+                  << " remaining=" << recovered_order_3->quantity
+                  << " reserved_base=" << recovered_reservation_3->remaining_amount << "\n";
+        print_account("          buyer ", *recovered, buyer_account);
+        print_account("          seller", *recovered, seller_account);
+        std::cout << "          contract=" << recovered_contract->id
                   << " state="
                   << contract_state_name(recovered_contract->state)
                   << " resource_fulfilled="
                   << recovered_contract->resource_delivery_obligation.fulfilled
                   << " payment_fulfilled="
                   << recovered_contract->payment_obligation.fulfilled
-                  << "\nRecovered Ledger: entries="
+                  << "\n          Ledger entries="
                   << recovered->ledger().entries().size()
                   << " last_sequence="
                   << recovered->ledger().entries().back().sequence
-                  << "\nRecovered WAL: records="
+                  << "; WAL records="
                   << scan_wal(wal_path).records.size()
-                  << "\nExact expected state recovered: true\n"
-                  << "Source of truth: bootstrap + WAL; no Agent memory restored.\n\n";
+                  << "\n  Verified: recovered orders, reservations, balances, contract state\n"
+                  << "            and Ledger count match the expected state.\n"
+                  << "  Source: bootstrap + WAL; no Agent memory restored.\n\n";
 
-        std::cout << "=== Stage 6: Explicit Retry Semantics ===\n";
+        std::cout << "[6/6] Retry with explicit semantics\n";
         const exchange::TradingResponse repeated =
             recovered->executor().execute(exchange::TradingRequest{
                 ambiguous_request_id,
@@ -729,10 +738,10 @@ namespace {
             repeated.result == exchange::TradingResult::Accepted
                 && repeated.assigned_order_id == 4,
             "repeated RequestId was not treated as a new attempt");
-        std::cout << "Repeated request_id=" << ambiguous_request_id
-                  << " result=Accepted new_order_id="
+        std::cout << "  Action: resubmit request_id=" << ambiguous_request_id
+                  << "\n  Result: Accepted; new_order="
                   << *repeated.assigned_order_id << "\n"
-                  << "RequestId semantics: correlation only; no deduplication.\n";
+                  << "          RequestId correlates attempts; it does not deduplicate.\n";
 
         exchange::TradingRequestAgentExecutionAdapter recovered_execution{
             recovered->agent_registry(),
@@ -768,15 +777,13 @@ namespace {
                     == ledger_retry_before
                 && scan_wal(wal_path).records.size() == wal_retry_before,
             "settled contract retry changed authoritative payment state");
-        std::cout << "Settlement retry: contract_id=" << contract_id
-                  << " result="
+        std::cout << "  Action: retry settlement of contract=" << contract_id
+                  << "\n  Result: "
                   << contract_result_name(settlement_retry_result.status)
-                  << "\nDouble payment prevented: true"
-                  << " (balances, Ledger, and WAL unchanged)\n\n";
+                  << "\n  Verified: no second payment; payer/payee quote balances,\n"
+                  << "            Ledger count and WAL count unchanged.\n\n";
 
-        std::cout << "Demo complete: deterministic validation, internal "
-                     "execution, synchronous durability, crash recovery, and "
-                     "explicit retry semantics verified.\n";
+        std::cout << "Demo complete: all six stages verified.\n";
     }
 }  // namespace
 
