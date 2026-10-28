@@ -2,9 +2,9 @@
 
 [简体中文](README.md) | English
 
-A C++20 deterministic execution system for account-backed trading, bilateral contracts, and internal settlement, with synchronous WAL durability and crash recovery. Scripted or rule-based agents propose typed actions, while Python AI diagnostics explain execution evidence; deterministic mechanisms constrain both execution and factual claims.
+A C++20 deterministic execution system for account-backed trading, bilateral contracts, and internal settlement, with synchronous WAL durability and crash recovery. Scripted or rule-based agents propose typed actions, while C++ evidence tools export structured execution and recovery information.
 
-**Agent actions and AI diagnoses must pass deterministic checks before becoming authoritative state or trusted conclusions.**
+**Agents propose actions, deterministic execution determines authoritative state, and C++ tools export execution and recovery evidence.**
 
 ## Architecture
 
@@ -19,28 +19,26 @@ flowchart TB
         apply --> state["Accounts / orders<br/>Contracts / Ledger"]
     end
 
-    subgraph diagnostics_path["Diagnostics · read-only evidence interpretation"]
+    subgraph evidence_path["Evidence · read-only execution information"]
         direction LR
-        claims["User question /<br/>model claims"] --> validation["Schema /<br/>evidence grounding"]
-        evidence["C++ evidence<br/>Execution snapshots<br/>Offline WAL replay"] --> validation
-        validation --> summary["Locally rendered<br/>trusted summary"]
+        evidence["C++ evidence<br/>Execution snapshots<br/>Offline WAL replay"] --> records["Structured JSON<br/>Orders / trades / replay outcomes"]
     end
 
-    execution_path ~~~ diagnostics_path
+    execution_path ~~~ evidence_path
 
     classDef intent fill:#fff0df,stroke:#bf762e,color:#754213
     classDef execution fill:#e8f0fc,stroke:#6486b5,color:#203e65
     classDef state fill:#284f7c,stroke:#1c3d62,color:#ffffff
     classDef evidence fill:#edf7ef,stroke:#7ba98b,color:#2c5438
-    classDef trusted fill:#d9eeea,stroke:#398579,color:#20574e
-    class client,claims intent
+    classDef output fill:#d9eeea,stroke:#398579,color:#20574e
+    class client intent
     class admission,wal,apply execution
     class state state
     class evidence evidence
-    class validation,summary trusted
+    class records output
 ```
 
-TCP I/O can be concurrent while authoritative mutations remain serial. Agents can also call the runtime directly, without TCP. Durable mode synchronizes the WAL before applying commands; diagnostics reads evidence separately and does not mutate authoritative state.
+TCP I/O can be concurrent while authoritative mutations remain serial. Agents can also call the runtime directly, without TCP. Durable mode synchronizes the WAL before applying commands. C++ evidence tools read execution information; historical queries recover a private copy of an offline WAL without modifying the source.
 
 ## Design Decisions
 
@@ -72,11 +70,11 @@ Unexpected journal/application exceptions propagate and poison both trading and 
 
 The execution path independently checks balances, cancellation ownership, contract permissions, and state transitions. Agent interfaces submit action requests; the execution layer modifies accounts, the order book, and Ledger. Economic profiles add admission constraints that TCP clients do not automatically inherit. The execution layer's business checks make the final admission decision.
 
-### Q5. Why is valid model JSON not enough to trust an AI diagnosis?
+### Q5. What can the C++ evidence tools establish?
 
-Valid JSON establishes parseability, and schema validation alone cannot establish truth. The diagnostic runner grounds supported facts and causes against C++ execution evidence, then renders a trusted summary locally from validated fields. Even correct structured facts do not make arbitrary accompanying prose trustworthy. If an order is partially filled with its remainder resting, but the model writes “cancelled,” the local summary reports the verified resting state; contradictory structured facts instead cause rejection. The [diagnostic regression tests](diagnostics/python/tests/test_diagnostic_runner.py) check that provider prose cannot change the trusted summary.
+The [partial-fill tool](apps/exchange_diagnostic_evidence/main.cpp) exports structured execution evidence from a fixed C++ scenario. The [historical order tool](apps/exchange_historical_order_evidence/main.cpp) runs production recovery on a private copy of an offline WAL, exporting orders, trades, reservations, and recomputed business outcomes. Neither tool calls a model or generates AI diagnoses; the [C++ evidence tests](tests/diagnostics/) cover their behavior.
 
-Evidence also limits the questions that can be answered. Execution-time partial-fill evidence comes from a fixed real C++ scenario, not arbitrary historical contexts. The historical tool runs production recovery on a private copy of an offline WAL, with conclusions limited to the recovered prefix. It cannot prove original response delivery or recreate missing pre-execution matching context or arbitrary matching-stop causes. Equal OrderIds across independent tools do not identify the same execution.
+Historical evidence is limited to the recovered prefix. It cannot prove original response delivery or recreate missing pre-execution matching context or arbitrary matching-stop causes. Equal OrderIds across independent tools do not identify the same execution.
 
 ### Q6. Why did the Ledger optimization improve throughput but barely affect durable performance?
 
@@ -99,8 +97,8 @@ ctest --test-dir build --output-on-failure
 
 Alternatively, run `./quickstart.sh` to build and launch the demo, or `./quickstart.sh test` to run the full C++ test suite.
 
-The main demo uses local scripts and calls no market-data or model API. Python AI diagnostics and their independent model provider remain available. Python diagnostics tests require Python 3.10+: `python3 -m unittest discover -s diagnostics/python/tests -v`. They make no live API calls by default and skip explicitly opt-in historical C++ integration tests.
+The main demo uses local scripts and calls no market-data or model API. Both C++ evidence applications are built with the default Linux targets and output structured JSON.
 
 ## Scope and Limitations
 
-The system runs authoritative state changes serially on a single node, with one instrument per runtime, internal account balances and settlement, and explicit durability, recovery, and AI integration boundaries. It provides no multi-node HA or general exactly-once execution, routes no real orders, and holds no assets in custody. It is not a production exchange or a general-purpose Agent orchestration platform.
+The system runs authoritative state changes serially on a single node, with one instrument per runtime, internal account balances and settlement, explicit durability and recovery boundaries, typed Agent interfaces, and structured execution evidence. It provides no multi-node HA or general exactly-once execution, routes no real orders, and holds no assets in custody. It is not a production exchange or a general-purpose Agent orchestration platform.

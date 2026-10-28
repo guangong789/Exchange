@@ -2,9 +2,9 @@
 
 简体中文 | [English](README-EN.md)
 
-一个使用 C++20 构建的确定性交易与 Agent 执行系统，支持账户交易、双边合约和内部结算，通过同步 WAL 与崩溃恢复重建权威状态。脚本或规则 Agent 提出类型化动作，Python AI 诊断基于执行证据生成解释；执行与事实判断都受确定性机制约束。
+一个使用 C++20 构建的确定性交易与 Agent 执行系统，支持账户交易、双边合约和内部结算，通过同步 WAL 与崩溃恢复重建权威状态。脚本或规则 Agent 提出类型化动作，C++ 证据工具导出结构化的执行与恢复信息。
 
-**Agent 动作与 AI 诊断都受确定性机制约束，不能自行成为权威状态或可信结论。**
+**Agent 提出动作，确定性执行路径决定权威状态；C++ 工具导出执行与恢复证据。**
 
 ## 架构
 
@@ -19,28 +19,26 @@ flowchart TB
         apply --> state["账户 / 订单<br/>合约 / Ledger"]
     end
 
-    subgraph diagnostics_path["诊断 · 只读证据解释"]
+    subgraph evidence_path["证据 · 只读执行信息"]
         direction LR
-        claims["用户问题 / 模型声明"] --> validation["Schema / 证据校验"]
-        evidence["C++ 证据<br/>执行快照 / 离线 WAL 重放"] --> validation
-        validation --> summary["本地生成的可信摘要"]
+        evidence["C++ 证据<br/>执行快照 / 离线 WAL 重放"] --> records["结构化 JSON<br/>订单 / 成交 / 恢复结果"]
     end
 
-    execution_path ~~~ diagnostics_path
+    execution_path ~~~ evidence_path
 
     classDef intent fill:#fff0df,stroke:#bf762e,color:#754213
     classDef execution fill:#e8f0fc,stroke:#6486b5,color:#203e65
     classDef state fill:#284f7c,stroke:#1c3d62,color:#ffffff
     classDef evidence fill:#edf7ef,stroke:#7ba98b,color:#2c5438
-    classDef trusted fill:#d9eeea,stroke:#398579,color:#20574e
-    class client,claims intent
+    classDef output fill:#d9eeea,stroke:#398579,color:#20574e
+    class client intent
     class admission,wal,apply execution
     class state state
     class evidence evidence
-    class validation,summary trusted
+    class records output
 ```
 
-TCP I/O 可以并发，权威状态修改保持串行；Agent 也可以直接调用 runtime，不必经过 TCP。持久化模式在应用命令前完成 WAL 同步。诊断单独读取证据，不修改权威状态。
+TCP I/O 可以并发，权威状态修改保持串行；Agent 也可以直接调用 runtime，不必经过 TCP。持久化模式在应用命令前完成 WAL 同步。C++ 证据工具读取执行信息；历史查询在离线 WAL 的私有副本上恢复，不修改源 WAL。
 
 ## 设计取舍
 
@@ -72,11 +70,11 @@ WAL 接收也不等于业务成功：资金不足等交易拒绝可能发生在�
 
 动作随后进入实际执行路径，继续检查余额、撤单所有权、合约参与权限和状态转换。Agent 接口只提交动作请求，账户、订单簿和 Ledger 由执行层修改。经济 profile 提供额外的准入约束，TCP 客户端不会自动继承它；最终是否执行由执行层的业务检查决定。
 
-### Q5. 为什么模型输出了合法 JSON，诊断结论仍然不能直接相信？
+### Q5. C++ 证据工具能说明什么？
 
-合法 JSON 只说明格式可解析，schema 校验也不能证明事实正确。诊断入口还要将受支持的事实和原因与 C++ 执行证据核对，并从已验证字段在本地生成可信摘要；即使结构化事实全部正确，模型附带的任意文字仍不可信。例如，部分成交订单的余量仍挂在簿上，模型文字却说“已撤销”，本地摘要会报告已验证的挂单状态；如果结构化事实本身也声称已撤销，则拒绝诊断。[诊断回归测试](diagnostics/python/tests/test_diagnostic_runner.py)验证了原文不能改变可信摘要。
+[partial-fill 工具](apps/exchange_diagnostic_evidence/main.cpp)导出固定 C++ 场景的结构化执行证据；[历史订单工具](apps/exchange_historical_order_evidence/main.cpp)在离线 WAL 的私有副本上运行生产恢复，导出订单、成交、预留和重算的业务结果。两者均不调用模型或生成 AI 诊断，相关行为由 [C++ evidence 测试](tests/diagnostics/)覆盖。
 
-证据范围也决定能回答什么：执行时 partial-fill 证据来自固定的真实 C++ 场景，不支持任意历史上下文查询；历史工具在离线 WAL 私有副本上运行生产恢复，结论限于恢复前缀。历史证据不能证明原始响应送达，也不能补出缺失的执行前撮合上下文或任意停止撮合原因。两个独立工具中相同的 OrderId 不代表同一次执行。
+历史证据限于恢复前缀，不能证明原始响应送达，也不能补出缺失的执行前撮合上下文或任意停止撮合原因。两个独立工具中相同的 OrderId 不代表同一次执行。
 
 ### Q6. 为什么优化了 Ledger，持久化吞吐却几乎没有变化？
 
@@ -99,8 +97,8 @@ ctest --test-dir build --output-on-failure
 
 也可运行 `./quickstart.sh` 构建并演示，或使用 `./quickstart.sh test` 运行完整 C++ 测试。
 
-主 demo 使用本地脚本，不调用行情或模型 API。Python AI 诊断及其独立的模型 provider 仍保留。Python 诊断测试需 Python 3.10+：`python3 -m unittest discover -s diagnostics/python/tests -v`；默认不调用实时 API，显式 opt-in 的历史 C++ 集成测试默认跳过。
+主 demo 使用本地脚本，不调用行情或模型 API。两个 C++ 证据应用随 Linux 默认目标构建，输出结构化 JSON。
 
 ## 范围与限制
 
-系统在单节点上串行执行权威状态变更，每个 runtime 对应一个交易品种，使用内部账户余额和结算，提供明确的持久化、恢复和 AI 接入边界。项目不提供多节点 HA 或通用 exactly-once，不路由真实订单、不托管资产，也不是生产交易所或通用 Agent 编排平台。
+系统在单节点上串行执行权威状态变更，每个 runtime 对应一个交易品种，使用内部账户余额和结算，提供明确的持久化、恢复、类型化 Agent 接口和结构化执行证据。项目不提供多节点 HA 或通用 exactly-once，不路由真实订单、不托管资产，也不是生产交易所或通用 Agent 编排平台。
