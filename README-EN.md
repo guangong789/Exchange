@@ -2,9 +2,9 @@
 
 [简体中文](README.md) | English
 
-A C++20 deterministic execution system for account-backed trading, bilateral contracts, and internal settlement, with synchronous WAL durability and crash recovery. AI proposes typed actions and evidence-based diagnoses; deterministic mechanisms constrain both execution and factual claims.
+A C++20 deterministic execution system for account-backed trading, bilateral contracts, and internal settlement, with synchronous WAL durability and crash recovery. Scripted or rule-based agents propose typed actions, while Python AI diagnostics explain execution evidence; deterministic mechanisms constrain both execution and factual claims.
 
-**Untrusted AI can propose actions and explanations, but deterministic mechanisms decide what becomes authoritative or trusted.**
+**Agent actions and AI diagnoses must pass deterministic checks before becoming authoritative state or trusted conclusions.**
 
 ## Architecture
 
@@ -66,9 +66,9 @@ Journal acceptance is also distinct from business success: trading rejections su
 
 Unexpected journal/application exceptions propagate and poison both trading and contract execution, including non-durable trading. Local insertion and pre-matching rollback do not provide global rollback after matching or event publication begins. A poisoned runtime must be discarded or recovered from its WAL before further execution. The WAL encoding is unchanged; histories containing the former balance-overflow defects replay with corrected financial rejection rules rather than reconstructing an unreleasable balance.
 
-### Q4. How can AI propose trading actions without bypassing execution constraints?
+### Q4. How are agent trading actions constrained by the execution path?
 
-Model output cannot authorize itself. The provider parses it into a closed set of typed actions; AgentRuntime checks structure and configured hard economic constraints. A host-side adapter then binds the account and acting identity from the registry, so action fields cannot substitute another execution account.
+`AgentDecisionProvider` returns a closed set of typed actions; scripted and rule-based strategies remain available. AgentRuntime checks structure and configured hard economic constraints. A host-side adapter then binds the account and acting identity from the registry, so action fields cannot substitute another execution account.
 
 The execution path independently checks balances, cancellation ownership, contract permissions, and state transitions. Agent interfaces submit action requests; the execution layer modifies accounts, the order book, and Ledger. Economic profiles add admission constraints that TCP clients do not automatically inherit. The execution layer's business checks make the final admission decision.
 
@@ -86,12 +86,12 @@ Previously reported paired measurements showed **21,204 → 51,550 commands/s (a
 
 ## Quick Start
 
-On Linux / WSL2, use a C++20 compiler, CMake 3.20+, and the nlohmann-json CMake package. Building tests also requires GoogleTest (downloaded through CMake FetchContent if unavailable); the script's default mode disables tests. Disabling external providers does not remove the nlohmann-json dependency.
+On Linux / WSL2, use a C++20 compiler, CMake 3.20+, and the nlohmann-json CMake package. Building tests also requires GoogleTest (downloaded through CMake FetchContent if unavailable); the script's default mode disables tests. The retained C++ evidence tools use nlohmann-json; the C++ build does not require libcurl, OpenSSL, or Boost.
 
 Without live models or external APIs, the [main demo](apps/exchange_runtime_demo/main.cpp) uses scripted actions and a real WAL to demonstrate trading, contract settlement, a process crash before response delivery, and exact recovery. Run from the repository root:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ./build/exchange_runtime_demo
@@ -99,7 +99,7 @@ ctest --test-dir build --output-on-failure
 
 Alternatively, run `./quickstart.sh` to build and launch the demo, or `./quickstart.sh test` to run the full C++ test suite.
 
-This configuration disables optional external integrations; the main demo does not require live market data or a model API. Python diagnostics tests require Python 3.10+: `python3 -m unittest discover -s diagnostics/python/tests -v`. They make no live API calls by default and skip explicitly opt-in historical C++ integration tests.
+The main demo uses local scripts and calls no market-data or model API. Python AI diagnostics and their independent model provider remain available. Python diagnostics tests require Python 3.10+: `python3 -m unittest discover -s diagnostics/python/tests -v`. They make no live API calls by default and skip explicitly opt-in historical C++ integration tests.
 
 ## Scope and Limitations
 

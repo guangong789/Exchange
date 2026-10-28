@@ -378,8 +378,8 @@ namespace exchange {
             CapturingDecisionProvider provider;
             FakeExternalMarketFeed feed;
             feed.state = ExternalMarketState{
-                ExternalMarketSource::BinanceAlpha,
-                "ALPHA_426USDT",
+                ExternalMarketSource::Scripted,
+                "SCRIPTED_MARKET",
                 ExternalPrice{4'070'000, 8},
                 ExternalPrice{4'060'000, 8},
                 ExternalPrice{4'080'000, 8},
@@ -408,7 +408,7 @@ namespace exchange {
                 provider.observations[0].world.external_market.has_value());
             EXPECT_EQ(
                 provider.observations[0].world.external_market->symbol,
-                "ALPHA_426USDT");
+                "SCRIPTED_MARKET");
             EXPECT_FALSE(
                 provider.observations[1].world.external_market.has_value());
             EXPECT_FALSE(
@@ -426,7 +426,7 @@ namespace exchange {
                 ExternalMarketFreshness::Fresh);
             EXPECT_EQ(
                 runtime.trace()[0].external_market_context->symbol,
-                "ALPHA_426USDT");
+                "SCRIPTED_MARKET");
             EXPECT_EQ(
                 runtime.trace()[0].external_market_context
                     ->latest_trade_price,

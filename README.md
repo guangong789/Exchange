@@ -2,9 +2,9 @@
 
 简体中文 | [English](README-EN.md)
 
-一个使用 C++20 构建的确定性交易与 Agent 执行系统，支持账户交易、双边合约和内部结算，通过同步 WAL 与崩溃恢复重建权威状态。AI 可以提出类型化动作和基于证据的诊断，但执行与事实判断都受确定性机制约束。
+一个使用 C++20 构建的确定性交易与 Agent 执行系统，支持账户交易、双边合约和内部结算，通过同步 WAL 与崩溃恢复重建权威状态。脚本或规则 Agent 提出类型化动作，Python AI 诊断基于执行证据生成解释；执行与事实判断都受确定性机制约束。
 
-**不可信 AI 可以提出动作和解释，但确定性机制决定什么能成为权威状态或可信结论。**
+**Agent 动作与 AI 诊断都受确定性机制约束，不能自行成为权威状态或可信结论。**
 
 ## 架构
 
@@ -66,9 +66,9 @@ WAL 接收也不等于业务成功：资金不足等交易拒绝可能发生在�
 
 意外的 journal/application 异常会原样传播，并使交易和合约执行共同进入 poisoned 状态，非持久化交易也遵守这一边界。局部插入回滚和撮合前回滚不代表撮合或事件发布开始后的全局回滚；后续执行必须丢弃该 runtime，或从 WAL 创建恢复实例。WAL 编码没有改变；包含旧余额溢出缺陷的历史按修正后的财务规则重放为业务拒绝，不再重建无法释放预留的余额。
 
-### Q4. 如何让 AI 提出交易动作，却不能绕过执行约束？
+### Q4. Agent 提出的交易动作如何受到执行约束？
 
-模型输出不能自行成为权威命令。Provider 先将输出解析为封闭的类型化动作集合；AgentRuntime 检查结构和配置的硬经济约束，再由宿主侧 adapter 从注册表绑定账户与行动者身份。模型可以描述想做什么，但不能通过动作字段换成另一个执行账户。
+`AgentDecisionProvider` 返回封闭的类型化动作集合；当前保留脚本和规则策略。AgentRuntime 检查结构和配置的硬经济约束，再由宿主侧 adapter 从注册表绑定账户与行动者身份。动作字段不能将请求切换到其他执行账户。
 
 动作随后进入实际执行路径，继续检查余额、撤单所有权、合约参与权限和状态转换。Agent 接口只提交动作请求，账户、订单簿和 Ledger 由执行层修改。经济 profile 提供额外的准入约束，TCP 客户端不会自动继承它；最终是否执行由执行层的业务检查决定。
 
@@ -86,12 +86,12 @@ WAL 接收也不等于业务成功：资金不足等交易拒绝可能发生在�
 
 ## 快速开始
 
-Linux / WSL2 需要 C++20 编译器、CMake 3.20+、nlohmann-json CMake package。构建测试时还需 GoogleTest（未安装时 CMake 通过 FetchContent 下载）；脚本默认模式关闭测试。关闭外部 provider 仍需 nlohmann-json。
+Linux / WSL2 需要 C++20 编译器、CMake 3.20+、nlohmann-json CMake package。构建测试时还需 GoogleTest（未安装时 CMake 通过 FetchContent 下载）；脚本默认模式关闭测试。nlohmann-json 用于保留的 C++ 证据工具；C++ 构建不需要 libcurl、OpenSSL 或 Boost。
 
 无需实时模型或外部 API，[主 demo](apps/exchange_runtime_demo/main.cpp)使用脚本动作和真实 WAL，展示交易、合约结算、响应交付前的进程崩溃与精确恢复。在仓库根目录运行：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ./build/exchange_runtime_demo
@@ -99,7 +99,7 @@ ctest --test-dir build --output-on-failure
 
 也可运行 `./quickstart.sh` 构建并演示，或使用 `./quickstart.sh test` 运行完整 C++ 测试。
 
-上述配置关闭可选外部服务集成，主 demo 不需要实时行情或模型 API。Python 诊断测试需 Python 3.10+：`python3 -m unittest discover -s diagnostics/python/tests -v`；默认不调用实时 API，显式 opt-in 的历史 C++ 集成测试默认跳过。
+主 demo 使用本地脚本，不调用行情或模型 API。Python AI 诊断及其独立的模型 provider 仍保留。Python 诊断测试需 Python 3.10+：`python3 -m unittest discover -s diagnostics/python/tests -v`；默认不调用实时 API，显式 opt-in 的历史 C++ 集成测试默认跳过。
 
 ## 范围与限制
 

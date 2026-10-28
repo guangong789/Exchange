@@ -4,10 +4,6 @@ project(crypto_exchange_simulator VERSION 1.0.0 LANGUAGES CXX)
 
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
-option(EXCHANGE_BUILD_DEEPSEEK_PROVIDER "Build the DeepSeek agent provider" ON)
-option(EXCHANGE_BUILD_BINANCE_ALPHA_FEED "Build the Binance Alpha market feed" ON)
-option(EXCHANGE_BUILD_AGENT_LIVE_SMOKE
-    "Build the opt-in live Agent Native smoke application" OFF)
 find_package(Threads REQUIRED)
 
 add_library(exchange_core
@@ -164,90 +160,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-if(EXCHANGE_BUILD_BINANCE_ALPHA_FEED)
-    find_package(CURL REQUIRED)
-    find_package(nlohmann_json CONFIG REQUIRED)
-    find_package(OpenSSL REQUIRED)
-    find_package(Boost 1.74 CONFIG REQUIRED)
-
-    add_library(exchange_agent_binance_alpha
-        src/agent/provider/binance_alpha/binance_alpha_market_feed.cpp
-    )
-    add_library(exchange::agent_binance_alpha
-        ALIAS exchange_agent_binance_alpha)
-    target_link_libraries(exchange_agent_binance_alpha
-        PUBLIC exchange::agent
-        PRIVATE
-            CURL::libcurl
-            nlohmann_json::nlohmann_json
-            OpenSSL::SSL
-            OpenSSL::Crypto
-            Boost::headers
-            Threads::Threads
-    )
-    target_compile_definitions(exchange_agent_binance_alpha
-        PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
-    target_compile_features(exchange_agent_binance_alpha PUBLIC cxx_std_20)
-    if(MSVC)
-        target_compile_options(
-            exchange_agent_binance_alpha PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(
-            exchange_agent_binance_alpha PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-endif()
-
-if(EXCHANGE_BUILD_DEEPSEEK_PROVIDER)
-    find_package(CURL REQUIRED)
-    find_package(nlohmann_json CONFIG REQUIRED)
-
-    add_library(exchange_agent_deepseek
-        src/agent/provider/deepseek/deepseek_client.cpp
-        src/agent/provider/deepseek/deepseek_decision_provider.cpp
-    )
-    add_library(exchange::agent_deepseek ALIAS exchange_agent_deepseek)
-    target_link_libraries(exchange_agent_deepseek
-        PUBLIC exchange::agent
-        PRIVATE CURL::libcurl nlohmann_json::nlohmann_json
-    )
-    target_compile_features(exchange_agent_deepseek PUBLIC cxx_std_20)
-    if(MSVC)
-        target_compile_options(
-            exchange_agent_deepseek PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(
-            exchange_agent_deepseek PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-endif()
-
-if(EXCHANGE_BUILD_AGENT_LIVE_SMOKE)
-    if(NOT TARGET exchange_agent_deepseek
-        OR NOT TARGET exchange_agent_binance_alpha)
-        message(FATAL_ERROR
-            "The Agent live smoke requires the DeepSeek provider and "
-            "Binance Alpha feed")
-    endif()
-
-    add_executable(exchange_agent_live_smoke
-        apps/exchange_agent_live_smoke/main.cpp
-    )
-    target_link_libraries(exchange_agent_live_smoke
-        PRIVATE
-            exchange::agent
-            exchange::agent_deepseek
-            exchange::agent_binance_alpha
-            Threads::Threads
-    )
-    target_compile_features(exchange_agent_live_smoke PRIVATE cxx_std_20)
-    if(MSVC)
-        target_compile_options(
-            exchange_agent_live_smoke PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(
-            exchange_agent_live_smoke PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-endif()
-
 if(EXCHANGE_BUILD_BENCHMARKS)
     find_package(benchmark CONFIG REQUIRED)
 
@@ -351,14 +263,6 @@ if(EXCHANGE_BUILD_TESTS)
         tests/agent/runtime/agent_contract_runtime_test.cpp
         tests/agent/runtime/agent_society_experiment_test.cpp
         tests/agent/runtime/agent_runtime_test.cpp)
-    if(TARGET exchange_agent_binance_alpha)
-        list(APPEND EXCHANGE_TEST_SOURCES
-            tests/agent/provider/binance_alpha_market_feed_test.cpp)
-    endif()
-    if(TARGET exchange_agent_deepseek)
-        list(APPEND EXCHANGE_TEST_SOURCES
-            tests/agent/provider/deepseek_decision_provider_test.cpp)
-    endif()
     if(TARGET exchange_gateway)
         list(APPEND EXCHANGE_TEST_SOURCES
             tests/gateway/epoll_server_test.cpp
@@ -383,13 +287,6 @@ if(EXCHANGE_BUILD_TESTS)
             GTest::gtest_main
             Threads::Threads
     )
-    if(TARGET exchange_agent_deepseek)
-        target_link_libraries(exchange_test PRIVATE exchange::agent_deepseek)
-    endif()
-    if(TARGET exchange_agent_binance_alpha)
-        target_link_libraries(exchange_test
-            PRIVATE exchange::agent_binance_alpha)
-    endif()
     if(TARGET exchange_gateway)
         target_link_libraries(exchange_test PRIVATE exchange::gateway)
         add_dependencies(exchange_test exchange_server)
@@ -414,7 +311,7 @@ if(EXCHANGE_BUILD_TESTS)
     gtest_discover_tests(exchange_test)
 
     # Keep replacement operator new and deterministic failure injection isolated
-    # from the normal test executable and its threaded gateway/provider tests.
+    # from the normal test executable and its threaded gateway tests.
     add_executable(exchange_allocation_test
         tests/execution/allocation_failure_test.cpp)
     target_link_libraries(exchange_allocation_test PRIVATE

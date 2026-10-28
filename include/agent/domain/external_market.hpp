@@ -8,7 +8,7 @@
 
 namespace exchange {
     enum class ExternalMarketSource {
-        BinanceAlpha,
+        Scripted,
     };
 
     enum class ExternalMarketFreshness {
@@ -25,7 +25,7 @@ namespace exchange {
     };
 
     struct ExternalMarketState {
-        ExternalMarketSource source{ExternalMarketSource::BinanceAlpha};
+        ExternalMarketSource source{ExternalMarketSource::Scripted};
         std::string symbol;
         std::optional<ExternalPrice> latest_trade_price;
         std::optional<ExternalPrice> best_bid;

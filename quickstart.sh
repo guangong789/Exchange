@@ -47,10 +47,7 @@ run_step() {
 printf '[1/3] Configure\n'
 run_step Configuration cmake -S "$repo_root" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DEXCHANGE_BUILD_DEEPSEEK_PROVIDER=OFF \
-    -DEXCHANGE_BUILD_BINANCE_ALPHA_FEED=OFF \
     -DEXCHANGE_BUILD_BENCHMARKS=OFF \
-    -DEXCHANGE_BUILD_AGENT_LIVE_SMOKE=OFF \
     -DEXCHANGE_BUILD_TESTS="$build_tests"
 if [[ $build_tests == ON ]]; then
     printf '[2/3] Build C++ tests\n'
