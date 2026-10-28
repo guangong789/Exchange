@@ -322,6 +322,7 @@ if(EXCHANGE_BUILD_TESTS)
         tests/durability/durable_contract_process_test.cpp
         tests/durability/execution_wal_contract_test.cpp
         tests/durability/execution_recovery_test.cpp
+        tests/durability/financial_boundary_recovery_test.cpp
         tests/execution/execution_command_test.cpp
         tests/execution/trading_bootstrap_test.cpp
         tests/execution/trading_request_executor_test.cpp
@@ -411,4 +412,13 @@ if(EXCHANGE_BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(exchange_test)
+
+    # Keep replacement operator new and deterministic failure injection isolated
+    # from the normal test executable and its threaded gateway/provider tests.
+    add_executable(exchange_allocation_test
+        tests/execution/allocation_failure_test.cpp)
+    target_link_libraries(exchange_allocation_test PRIVATE
+        exchange::core GTest::gtest_main)
+    gtest_discover_tests(exchange_allocation_test)
+    add_dependencies(exchange_test exchange_allocation_test)
 endif()

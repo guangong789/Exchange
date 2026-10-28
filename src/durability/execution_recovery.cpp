@@ -167,11 +167,13 @@ namespace exchange {
             static_cast<void>(account_id);
             for (const auto& [asset_id, balance] : balances) {
                 static_cast<void>(asset_id);
-                if (balance.available < 0 || balance.reserved < 0) {
+                if (balance.available < 0 || balance.reserved < 0
+                    || balance.reserved > std::numeric_limits<Amount>::max()
+                                              - balance.available) {
                     throw ExecutionRecoveryException{
                         ExecutionRecoveryFailure::StateNotFresh,
                         0,
-                        "bootstrap contains a negative balance"};
+                        "bootstrap contains an invalid balance"};
                 }
             }
         }
@@ -290,6 +292,8 @@ namespace exchange {
                 const Amount expected_reserved =
                     bootstrap_reserved + order_reserved;
                 if (balance.available < 0 || balance.reserved < 0
+                    || balance.reserved > std::numeric_limits<Amount>::max()
+                                              - balance.available
                     || balance.reserved != expected_reserved) {
                     throw ExecutionRecoveryException{
                         ExecutionRecoveryFailure::ReservationInvariant,

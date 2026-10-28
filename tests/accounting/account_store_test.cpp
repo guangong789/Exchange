@@ -8,6 +8,53 @@
 
 namespace exchange {
     namespace {
+        TEST(AccountStoreInvariantTest, CreditsKeepAllReservedFundsReleasableAtLimit) {
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            for (const bool bootstrap_funding : {false, true}) {
+                SCOPED_TRACE(bootstrap_funding);
+                AccountStore store;
+                ASSERT_TRUE(store.create_account(1));
+                store.fund(1, 10, maximum - 1);
+                ASSERT_EQ(store.reserve(1, 10, 2'000), ReserveResult::Success);
+                const auto credit = [&](Amount amount) {
+                    if (bootstrap_funding) {
+                        store.fund(1, 10, amount);
+                    } else {
+                        store.credit_available(1, 10, amount);
+                    }
+                };
+
+                // The exact representable total is valid, even with reservations.
+                credit(1);
+                const auto before = store.entries();
+                EXPECT_THROW(credit(1), std::overflow_error);
+                EXPECT_EQ(store.entries(), before);
+                EXPECT_NO_THROW(store.release(1, 10, 2'000));
+                EXPECT_EQ(store.find_balance(1, 10), (Balance{maximum, 0}));
+            }
+        }
+
+        TEST(AccountStoreTransferTest, DestinationReservationsCountTowardsCreditLimit) {
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            AccountStore store;
+            ASSERT_TRUE(store.create_account(1));
+            ASSERT_TRUE(store.create_account(2));
+            store.fund(1, 10, 2);
+            store.fund(2, 10, maximum - 1);
+            ASSERT_EQ(store.reserve(2, 10, 2), ReserveResult::Success);
+            ASSERT_EQ(store.transfer_available(1, 2, 10, 1),
+                      AvailableTransferResult::Success);
+            const auto before = store.entries();
+
+            EXPECT_EQ(store.validate_available_transfer(1, 2, 10, 1),
+                      AvailableTransferValidationResult::DestinationOverflow);
+            EXPECT_THROW(static_cast<void>(store.transfer_available(1, 2, 10, 1)),
+                         std::overflow_error);
+            EXPECT_EQ(store.entries(), before);
+            EXPECT_NO_THROW(store.release(2, 10, 2));
+            EXPECT_EQ(store.find_balance(2, 10), (Balance{maximum, 0}));
+        }
+
         Amount total_asset(
             const AccountStore& store,
             AssetId asset_id,
@@ -255,14 +302,13 @@ namespace exchange {
             constexpr Amount maximum = std::numeric_limits<Amount>::max();
             store.fund(1, 10, maximum);
             ASSERT_EQ(store.reserve(1, 10, 40), ReserveResult::Success);
-            store.credit_available(1, 10, 40);
             const auto before = store.find_balance(1, 10);
 
             EXPECT_THROW(store.credit_available(1, 10, 1),
                          std::overflow_error);
 
             EXPECT_EQ(store.find_balance(1, 10), before);
-            EXPECT_EQ(store.find_balance(1, 10), (Balance{maximum, 40}));
+            EXPECT_EQ(store.find_balance(1, 10), (Balance{maximum - 40, 40}));
             EXPECT_FALSE(store.find_balance(1, 20).has_value());
         }
 
@@ -351,7 +397,6 @@ namespace exchange {
             ASSERT_EQ(store.reserve(1, 10, 1), ReserveResult::Success);
             store.fund(2, 10, maximum);
             ASSERT_EQ(store.reserve(2, 10, 1), ReserveResult::Success);
-            store.fund(2, 10, 1);
             const auto source_before = store.find_balance(1, 10);
             const auto destination_before = store.find_balance(2, 10);
 
@@ -363,7 +408,7 @@ namespace exchange {
             EXPECT_EQ(store.find_balance(1, 10), source_before);
             EXPECT_EQ(store.find_balance(2, 10), destination_before);
             EXPECT_EQ(store.find_balance(1, 10), (Balance{1, 1}));
-            EXPECT_EQ(store.find_balance(2, 10), (Balance{maximum, 1}));
+            EXPECT_EQ(store.find_balance(2, 10), (Balance{maximum - 1, 1}));
         }
 
         TEST(AccountStoreTransferTest,
@@ -542,17 +587,16 @@ namespace exchange {
             EXPECT_FALSE(store.find_balance(1, 20).has_value());
         }
 
-        TEST(AccountStoreReserveTest, ReservedOverflowLeavesStateUnchanged) {
+        TEST(AccountStoreReserveTest, FullyReservedBalanceRejectsAdditionalFunding) {
             AccountStore store;
             ASSERT_TRUE(store.create_account(1));
             constexpr Amount maximum = std::numeric_limits<Amount>::max();
             store.fund(1, 10, maximum);
             ASSERT_EQ(store.reserve(1, 10, maximum), ReserveResult::Success);
-            store.fund(1, 10, 1);
             const auto before = store.find_balance(1, 10);
 
-            EXPECT_THROW(static_cast<void>(store.reserve(1, 10, 1)),
-                         std::overflow_error);
+            EXPECT_THROW(store.fund(1, 10, 1), std::overflow_error);
+            EXPECT_EQ(store.reserve(1, 10, 1), ReserveResult::InsufficientFunds);
             EXPECT_EQ(store.find_balance(1, 10), before);
         }
 
@@ -612,17 +656,18 @@ namespace exchange {
             EXPECT_EQ(store.find_balance(1, 10), before);
         }
 
-        TEST(AccountStoreReleaseTest, AvailableOverflowLeavesStateUnchanged) {
+        TEST(AccountStoreReleaseTest, CreditCannotPreventReleaseAtMaximumTotal) {
             AccountStore store;
             ASSERT_TRUE(store.create_account(1));
             constexpr Amount maximum = std::numeric_limits<Amount>::max();
             store.fund(1, 10, maximum);
             ASSERT_EQ(store.reserve(1, 10, 1), ReserveResult::Success);
-            store.fund(1, 10, 1);
             const auto before = store.find_balance(1, 10);
 
-            EXPECT_THROW(store.release(1, 10, 1), std::overflow_error);
+            EXPECT_THROW(store.fund(1, 10, 1), std::overflow_error);
             EXPECT_EQ(store.find_balance(1, 10), before);
+            EXPECT_NO_THROW(store.release(1, 10, 1));
+            EXPECT_EQ(store.find_balance(1, 10), (Balance{maximum, 0}));
         }
 
         TEST(AccountStoreReleaseTest, RejectsInvalidInputAndMissingAccount) {

@@ -56,11 +56,15 @@ Matching determines which orders trade, but cannot by itself ensure that their o
 
 Partial fills retain reservations for the remainder; buy-side price improvements release excess funds. Cancellation checks ownership and releases only the remaining obligation. Bilateral contract settlement spends available quote without consuming order reservations, as covered by the [account execution tests](tests/accounting/execution_coordinator_test.cpp) and [contract settlement tests](tests/durability/durable_contract_execution_test.cpp).
 
+Each account/asset balance keeps `available + reserved <= INT64_MAX`, including credits and transfers, so reserved funds remain releasable. An order whose settlement credits would exceed this range returns `INVALID_ORDER` before matching, preserving balances, reservations, orders, and Ledger. In durable mode this admitted command remains in the WAL and consumes an execution identity; recovery reproduces the rejection. Exact-boundary balances remain valid.
+
 ### Q3. What happens if a command is durable but the client never receives its response?
 
 Durable mode appends and synchronizes the command before applying it, then returns a business response. The process may crash after execution but before delivery, or the connection may break in that window. Restart validates the log and replays valid history in order from matching bootstrap account state, reconstructing orders, balances, reservations, contracts, and the Ledger. A missing response therefore cannot establish non-execution; the [real process tests](tests/gateway/durable_server_process_test.cpp) exercise this window.
 
 Journal acceptance is also distinct from business success: trading rejections such as insufficient funds can occur after journaling and recur during recovery. RequestId only correlates requests and responses; resubmitting it may create another order, with no general deduplication or exactly-once guarantee. Settled contracts reject another settlement to prevent double payment, but that protection is specific to their state machine.
+
+Unexpected journal/application exceptions propagate and poison both trading and contract execution, including non-durable trading. Local insertion and pre-matching rollback do not provide global rollback after matching or event publication begins. A poisoned runtime must be discarded or recovered from its WAL before further execution. The WAL encoding is unchanged; histories containing the former balance-overflow defects replay with corrected financial rejection rules rather than reconstructing an unreleasable balance.
 
 ### Q4. How can AI propose trading actions without bypassing execution constraints?
 

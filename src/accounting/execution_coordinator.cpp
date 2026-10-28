@@ -53,6 +53,7 @@ namespace exchange {
         enum class FinancialPreflightStatus {
             Ready,
             CounterpartyNotAccountBacked,
+            BalanceOverflow,
         };
 
         struct FinancialPreflightResult {
@@ -125,9 +126,11 @@ namespace exchange {
                     account_id,
                     asset_id);
                 if (snapshot.has_value()
-                    && (snapshot->available < 0 || snapshot->reserved < 0)) {
+                    && (snapshot->available < 0 || snapshot->reserved < 0
+                        || snapshot->reserved > std::numeric_limits<Amount>::max()
+                                                    - snapshot->available)) {
                     throw std::logic_error(
-                        "account balance contains a negative amount");
+                        "account balance is outside its representable range");
                 }
                 return projected_balances
                     .emplace(
@@ -151,13 +154,14 @@ namespace exchange {
                     asset_id);
                 if (amount
                     > std::numeric_limits<Amount>::max()
+                          - projected.balance.reserved
                           - projected.balance.available) {
-                    throw std::overflow_error(
-                        "projected available credit overflow");
+                    return false;
                 }
 
                 projected.balance.available += amount;
                 projected.row_exists = true;
+                return true;
             };
 
             const auto apply_action = [&](OrderId order_id,
@@ -253,14 +257,20 @@ namespace exchange {
                     execution.sell_order_id,
                     Side::Sell,
                     amounts.base_amount);
-                project_credit(
-                    buy_record.account_id,
-                    instrument.base_asset,
-                    amounts.base_amount);
-                project_credit(
-                    sell_record.account_id,
-                    instrument.quote_asset,
-                    amounts.quote_amount);
+                if (!project_credit(
+                        buy_record.account_id,
+                        instrument.base_asset,
+                        amounts.base_amount)
+                    || !project_credit(
+                        sell_record.account_id,
+                        instrument.quote_asset,
+                        amounts.quote_amount)) {
+                    // A representable order can still have unrepresentable
+                    // balance effects. Reject it before matching; do not turn a
+                    // synchronized command into a permanently throwing replay.
+                    result.status = FinancialPreflightStatus::BalanceOverflow;
+                    return result;
+                }
 
                 projected_execution_quantity[incoming.id] +=
                     preview.execution_quantity;
@@ -614,6 +624,15 @@ namespace exchange {
             static_cast<void>(reservations_.remove(request.order.id));
             events_.clear();
             return SubmitResult::InvalidOrder;
+        } catch (...) {
+            // Preview is read-only; allocation failure here can still undo
+            // the incoming admission completely before matching begins.
+            const std::exception_ptr preview_failure = std::current_exception();
+            accounts_.release(
+                request.account_id, requirement.asset_id, requirement.amount);
+            static_cast<void>(reservations_.remove(request.order.id));
+            events_.clear();
+            std::rethrow_exception(preview_failure);
         }
 
         FinancialPreflightResult preflight;
@@ -637,15 +656,17 @@ namespace exchange {
             std::rethrow_exception(preflight_failure);
         }
 
-        if (preflight.status
-            == FinancialPreflightStatus::CounterpartyNotAccountBacked) {
+        if (preflight.status != FinancialPreflightStatus::Ready) {
             accounts_.release(
                 request.account_id,
                 requirement.asset_id,
                 requirement.amount);
             static_cast<void>(reservations_.remove(request.order.id));
             events_.clear();
-            return SubmitResult::CounterpartyNotAccountBacked;
+            return preflight.status
+                       == FinancialPreflightStatus::CounterpartyNotAccountBacked
+                ? SubmitResult::CounterpartyNotAccountBacked
+                : SubmitResult::InvalidOrder;
         }
 
         std::vector<LedgerTransaction> ledger_batch;
@@ -737,6 +758,13 @@ namespace exchange {
             throw std::logic_error(
                 "cannot cancel a zero-remaining reservation");
         }
+
+        // Rule out predictable release failures before removing the live order
+        // or publishing a cancellation event.
+        accounts_.validate_release(
+            reservation->account_id,
+            reservation->asset_id,
+            reservation->remaining_amount);
 
         auto prepared_ledger_batch = ledger_.prepare_batch({
             make_release_ledger_transaction(

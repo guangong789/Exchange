@@ -37,6 +37,8 @@ namespace exchange {
 
         void reserve_order_capacity(std::size_t capacity);
 
+        // Rest insertion rolls back its list/index/price-level changes on
+        // failure. Earlier matches in this call are not rolled back.
         [[nodiscard]] std::vector<Trade> add_order(Order order);
         [[nodiscard]] AddOrderExecutionResult add_order_with_execution_result(
             Order order);

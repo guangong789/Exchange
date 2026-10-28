@@ -46,12 +46,10 @@ namespace exchange {
         }
         const ExecutionCommand& command =
             std::get<ExecutionCommand>(admission);
-        if (command_journal_ == nullptr) {
-            return command_applier_.apply(command);
-        }
-
         try {
-            command_journal_->append(command);
+            if (command_journal_ != nullptr) {
+                command_journal_->append(command);
+            }
             return command_applier_.apply(command);
         } catch (...) {
             poisoned_ = true;

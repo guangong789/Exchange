@@ -92,25 +92,24 @@ namespace exchange {
         }
 
         TEST(ObjectiveEvaluatorTest,
-             CheckedHoldingOverflowFailsWithoutMutation) {
+             CreditRejectionKeepsMaximumHoldingRepresentable) {
             AccountStore accounts;
             AgentRegistry registry;
             ASSERT_TRUE(accounts.create_account(account_a));
             ASSERT_TRUE(registry.register_agent({agent_a, account_a}));
             accounts.fund(account_a, 20, 2);
             ASSERT_EQ(accounts.reserve(account_a, 20, 1), ReserveResult::Success);
-            accounts.credit_available(
-                account_a,
-                20,
-                std::numeric_limits<Amount>::max() - 1);
+            constexpr Amount maximum = std::numeric_limits<Amount>::max();
+            // The AccountStore now rules out an overflowing total before an
+            // observer can see it. The exact maximum remains a valid holding.
+            EXPECT_THROW(accounts.credit_available(account_a, 20, maximum - 1),
+                         std::overflow_error);
+            accounts.credit_available(account_a, 20, maximum - 2);
             const Balance before = *accounts.find_balance(account_a, 20);
             const ObjectiveEvaluator evaluator(registry, accounts);
 
-            EXPECT_THROW(
-                static_cast<void>(evaluator.evaluate(
-                    agent_a,
-                    AssetTargetObjective{20, 1})),
-                std::overflow_error);
+            EXPECT_EQ(evaluator.evaluate(agent_a, AssetTargetObjective{20, maximum}),
+                      (ObjectiveProgress{agent_a, 20, maximum, maximum, true}));
             EXPECT_EQ(accounts.find_balance(account_a, 20), before);
         }
 

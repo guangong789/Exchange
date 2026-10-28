@@ -26,8 +26,10 @@ namespace exchange {
         TradingRequestExecutor& operator=(TradingRequestExecutor&&) = delete;
 
         [[nodiscard]] TradingResponse execute(const TradingRequest& request);
-        // Durable journal/apply failures poison this executor before the
-        // original exception is rethrown.
+        // Unexpected journal/apply failures poison this executor (and shared
+        // runtime) in either mode before rethrowing the original exception.
+        // Typed business rejections leave it usable. No global rollback is
+        // promised after matching starts; discard/recover a poisoned runtime.
         [[nodiscard]] bool poisoned() const noexcept;
         [[nodiscard]] bool durable_processing_started() const noexcept;
 

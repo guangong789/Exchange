@@ -1,6 +1,7 @@
 #include "execution/trading_runtime.hpp"
 
 #include <stdexcept>
+#include <limits>
 #include <type_traits>
 #include <variant>
 
@@ -43,6 +44,33 @@ namespace exchange {
                 (Balance{1'000, 0}));
             EXPECT_EQ(runtime.order_book().order_count(), 0U);
             EXPECT_TRUE(runtime.ledger().entries().empty());
+        }
+
+        TEST(TradingRuntimeTest, NonDurableCreditOverflowRejectsWithoutPoisoning) {
+            TradingRuntime runtime{test_instrument};
+            ASSERT_TRUE(runtime.accounts().create_account(1));
+            ASSERT_TRUE(runtime.accounts().create_account(2));
+            runtime.accounts().fund(1, 20, std::numeric_limits<Amount>::max());
+            runtime.accounts().fund(1, 10, 100);
+            runtime.accounts().fund(2, 20, 1);
+            ASSERT_EQ(runtime.executor().execute(
+                submit_request(1, 2, Side::Sell, 100, 1)).result,
+                TradingResult::Accepted);
+            const auto accounts_before = runtime.accounts().entries();
+            const auto reservations_before = runtime.reservations().entries();
+            const auto ledger_before = runtime.ledger().entries();
+
+            const auto rejected = runtime.executor().execute(
+                submit_request(2, 1, Side::Buy, 100, 1));
+            EXPECT_EQ(rejected.result, TradingResult::InvalidOrder);
+            EXPECT_TRUE(rejected.events.empty());
+            EXPECT_EQ(runtime.accounts().entries(), accounts_before);
+            EXPECT_EQ(runtime.reservations().entries(), reservations_before);
+            EXPECT_EQ(runtime.ledger().entries(), ledger_before);
+            EXPECT_FALSE(runtime.executor().poisoned());
+            EXPECT_FALSE(runtime.contract_executor().poisoned());
+            EXPECT_EQ(runtime.executor().execute(
+                {3, 2, CancelTradingRequest{1}}).result, TradingResult::Cancelled);
         }
 
         TEST(TradingRuntimeTest, RejectsInvalidInstrumentAtConstruction) {

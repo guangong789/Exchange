@@ -157,14 +157,37 @@ namespace exchange {
     }
 
     void OrderBook::rest_order(Order order) {
+        const auto insert = [this, &order](auto& book) {
+            const auto level = book.try_emplace(order.price).first;
+            auto& queue = level->second;
+            try {
+                queue.push_back(order);
+                try {
+                    // emplace 失败，仅 OrderBook 无法保证异常安全
+                    // Compensate locally: an unindexed order must never remain
+                    // executable, including when hash-table growth fails.
+                    const auto [location, inserted] = order_index_.emplace(
+                        order.id, OrderLocation{
+                            order.side, order.price, std::prev(queue.end())});
+                    static_cast<void>(location);
+                    if (!inserted) {
+                        throw std::logic_error("resting order index insertion failed");
+                    }
+                } catch (...) {
+                    queue.pop_back();
+                    throw;
+                }
+            } catch (...) {
+                if (queue.empty()) {
+                    book.erase(level);
+                }
+                throw;
+            }
+        };
         if (order.side == Side::Buy) {
-            auto& queue = bids_[order.price];
-            queue.push_back(order);
-            order_index_.emplace(order.id, OrderLocation{order.side, order.price, std::prev(queue.end())});
+            insert(bids_);
         } else {
-            auto& queue = asks_[order.price];
-            queue.push_back(order);
-            order_index_.emplace(order.id, OrderLocation{order.side, order.price, std::prev(queue.end())});
+            insert(asks_);
         }
     }
 

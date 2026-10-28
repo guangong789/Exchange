@@ -22,6 +22,8 @@ namespace exchange {
 
         void reserve_order_capacity(std::size_t capacity);
 
+        // Event publication can throw after the book has changed. Coordinated
+        // callers must stop execution on such failures; there is no global undo.
         [[nodiscard]] std::vector<Trade> add_order(Order order);
         [[nodiscard]] bool cancel_order(OrderId order_id);
 

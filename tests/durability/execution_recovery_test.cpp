@@ -673,8 +673,9 @@ namespace exchange {
                     calculate_bootstrap_fingerprint(overflowing_bootstrap)};
                 writer.append(SubmitExecutionCommand{
                     1, 1, {1, Side::Sell, OrderType::Limit, 100, 1, 1}});
-                writer.append(SubmitExecutionCommand{
-                    2, 2, {2, Side::Buy, OrderType::Limit, 100, 1, 2}});
+                // A real state-machine violation must remain fatal. Predictable
+                // credit overflow is now a replayable business rejection.
+                writer.append(AcceptContractExecutionCommand{1, 2});
             }
             const auto original_wal = read_file(path);
             const std::vector<RecoveredTradingOutcome> sentinel{
@@ -685,7 +686,7 @@ namespace exchange {
                     static_cast<void>(TradingRuntime::create_durable(
                         instrument, path, overflowing_bootstrap,
                         collect ? &outcomes : nullptr));
-                    FAIL() << "overflowing replay was accepted";
+                    FAIL() << "invalid Contract replay was accepted";
                 } catch (const ExecutionRecoveryException& error) {
                     EXPECT_EQ(error.failure(), ExecutionRecoveryFailure::CommandApplication);
                     EXPECT_EQ(error.wal_sequence(), 2U);
@@ -1029,7 +1030,7 @@ namespace exchange {
         }
 
         TEST(ExecutionRecoveryTest,
-             UnexpectedApplyFailureFailsStartupWithRecordContext) {
+             PreviouslyThrowingCreditOverflowReplaysAsInvalidOrder) {
             TemporaryDirectory directory;
             const std::string path = directory.wal_path();
             const TradingBootstrapConfig overflowing_bootstrap{{
@@ -1055,18 +1056,23 @@ namespace exchange {
                     Order{2, Side::Buy, OrderType::Limit, 100, 1, 2}});
             }
 
-            try {
-                static_cast<void>(TradingRuntime::create_durable(
-                    instrument,
-                    path,
-                    overflowing_bootstrap));
-                FAIL() << "recovery application failure was accepted";
-            } catch (const ExecutionRecoveryException& error) {
-                EXPECT_EQ(
-                    error.failure(),
-                    ExecutionRecoveryFailure::CommandApplication);
-                EXPECT_EQ(error.wal_sequence(), 2U);
-            }
+            const auto original_wal = read_file(path);
+            std::vector<RecoveredTradingOutcome> outcomes;
+            const auto recovered = TradingRuntime::create_durable(
+                instrument, path, overflowing_bootstrap, &outcomes);
+            EXPECT_EQ(outcomes, (std::vector<RecoveredTradingOutcome>{
+                {1, TradingResult::Accepted}, {2, TradingResult::InvalidOrder}}));
+            EXPECT_EQ(read_file(path), original_wal);
+            EXPECT_TRUE(recovered->order_book().find_order(1).has_value());
+            EXPECT_FALSE(recovered->order_book().find_order(2).has_value());
+            EXPECT_EQ(recovered->ledger().entries().size(), 1U);
+            EXPECT_FALSE(recovered->executor().poisoned());
+            ASSERT_EQ(recovered->executor().execute(cancel(3, 1, 1)).result,
+                      TradingResult::Cancelled);
+            const auto next = recovered->executor().execute(
+                submit(4, 1, Side::Sell, 100, 1));
+            EXPECT_EQ(next.result, TradingResult::Accepted);
+            EXPECT_EQ(next.assigned_order_id, 3U);
         }
 
         TEST(ExecutionRecoveryTest,

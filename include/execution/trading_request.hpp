@@ -36,7 +36,7 @@ namespace exchange {
         AccountNotFound,
         InsufficientFunds,
         DuplicateOrder,
-        InvalidOrder,
+        InvalidOrder,  // Invalid values or unrepresentable settlement credits.
         CounterpartyNotAccountBacked,
         CancelNotFound,
         CancelNotOwner,

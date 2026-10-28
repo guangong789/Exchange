@@ -86,8 +86,9 @@ namespace exchange {
             return;
         }
 
-        if (amount > std::numeric_limits<Amount>::max() - balance->second.available) {
-            throw std::overflow_error("available balance overflow");
+        if (amount > std::numeric_limits<Amount>::max()
+                         - balance->second.reserved - balance->second.available) {
+            throw std::overflow_error("total balance overflow");
         }
 
         balance->second.available += amount;
@@ -112,8 +113,8 @@ namespace exchange {
 
         if (amount
             > std::numeric_limits<Amount>::max()
-                  - balance->second.available) {
-            throw std::overflow_error("available balance overflow");
+                  - balance->second.reserved - balance->second.available) {
+            throw std::overflow_error("total balance overflow");
         }
 
         balance->second.available += amount;
@@ -137,7 +138,7 @@ namespace exchange {
                 throw std::out_of_range("transfer account does not exist");
             case AvailableTransferValidationResult::DestinationOverflow:
                 throw std::overflow_error(
-                    "destination available balance overflow");
+                    "destination total balance overflow");
         }
 
         auto from_account = accounts_.find(from_account_id);
@@ -184,8 +185,9 @@ namespace exchange {
 
         const auto to_balance = to_account->second.find(asset_id);
         if (to_balance != to_account->second.end()
-            && to_balance->second.available
-                   > std::numeric_limits<Amount>::max() - amount) {
+            && amount > std::numeric_limits<Amount>::max()
+                            - to_balance->second.reserved
+                            - to_balance->second.available) {
             return AvailableTransferValidationResult::DestinationOverflow;
         }
         return AvailableTransferValidationResult::Ready;
@@ -222,6 +224,17 @@ namespace exchange {
         AccountId account_id,
         AssetId asset_id,
         Amount amount) {
+        validate_release(account_id, asset_id, amount);
+        Balance& balance = accounts_.find(account_id)->second
+                               .find(asset_id)->second;
+        balance.reserved -= amount;
+        balance.available += amount;
+    }
+
+    void AccountStore::validate_release(
+        AccountId account_id,
+        AssetId asset_id,
+        Amount amount) const {
         validate_balance_mutation(account_id, asset_id, amount);
 
         const auto account = accounts_.find(account_id);
@@ -240,9 +253,6 @@ namespace exchange {
             > std::numeric_limits<Amount>::max() - balance->second.available) {
             throw std::overflow_error("available balance overflow");
         }
-
-        balance->second.reserved -= amount;
-        balance->second.available += amount;
     }
 
     void AccountStore::consume_reserved(

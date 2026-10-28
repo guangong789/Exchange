@@ -22,7 +22,7 @@ namespace exchange {
         AccountNotFound,
         InsufficientFunds,
         DuplicateOrder,
-        InvalidOrder,
+        InvalidOrder,  // Includes unrepresentable settlement balance effects.
         CounterpartyNotAccountBacked,
     };
 

@@ -940,7 +940,7 @@ namespace exchange {
             EXPECT_EQ(ledger.entries()[0].sequence, 1U);
         }
 
-        TEST_F(ExecutionCoordinatorTest, ReleaseFailureRetainsMetadataAndCancelEvent) {
+        TEST_F(ExecutionCoordinatorTest, InvalidReleaseIsDetectedBeforeCancellingOrder) {
             ASSERT_TRUE(accounts.create_account(1));
             accounts.fund(1, 10, 1'000);
             const Order order = limit_order(411, Side::Buy, 100, 1);
@@ -957,13 +957,8 @@ namespace exchange {
 
             EXPECT_EQ(accounts.find_balance(1, 10), (Balance{900, 0}));
             EXPECT_EQ(reservations.find(411), reservation_before);
-            EXPECT_FALSE(matching_engine.order_book().find_order(411).has_value());
-            ASSERT_EQ(events.size(), 1U);
-            ASSERT_TRUE(std::holds_alternative<OrderCancelled>(
-                events.events().front().payload));
-            expect_order_eq(
-                std::get<OrderCancelled>(events.events().front().payload).order,
-                order);
+            EXPECT_TRUE(matching_engine.order_book().find_order(411).has_value());
+            EXPECT_TRUE(events.empty());
             ASSERT_EQ(ledger.entries().size(), 1U);
             EXPECT_EQ(
                 ledger.entries()[0],
@@ -1775,12 +1770,12 @@ namespace exchange {
             const auto taker_quote = accounts.find_balance(2, 10);
             const auto ledger_before = ledger.entries();
 
-            EXPECT_THROW(
-                static_cast<void>(coordinator.submit_order(
+            EXPECT_EQ(
+                coordinator.submit_order(
                     OrderAdmissionRequest{
                         2,
-                        limit_order(653, Side::Buy, 100, 1)})),
-                std::overflow_error);
+                        limit_order(653, Side::Buy, 100, 1)}),
+                SubmitResult::InvalidOrder);
 
             EXPECT_EQ(accounts.find_balance(1, 20), maker_balance);
             EXPECT_EQ(accounts.find_balance(2, 10), taker_quote);
@@ -1811,12 +1806,12 @@ namespace exchange {
             const auto taker_quote = accounts.find_balance(2, 10);
             const auto ledger_before = ledger.entries();
 
-            EXPECT_THROW(
-                static_cast<void>(coordinator.submit_order(
+            EXPECT_EQ(
+                coordinator.submit_order(
                     OrderAdmissionRequest{
                         2,
-                        limit_order(655, Side::Buy, 100, 1)})),
-                std::overflow_error);
+                        limit_order(655, Side::Buy, 100, 1)}),
+                SubmitResult::InvalidOrder);
 
             EXPECT_EQ(accounts.find_balance(1, 20), maker_base);
             EXPECT_EQ(accounts.find_balance(1, 10), maker_quote);
@@ -1851,12 +1846,12 @@ namespace exchange {
             const auto taker_quote = accounts.find_balance(2, 10);
             const auto ledger_before = ledger.entries();
 
-            EXPECT_THROW(
-                static_cast<void>(coordinator.submit_order(
+            EXPECT_EQ(
+                coordinator.submit_order(
                     OrderAdmissionRequest{
                         2,
-                        limit_order(658, Side::Buy, 100, 4)})),
-                std::overflow_error);
+                        limit_order(658, Side::Buy, 100, 4)}),
+                SubmitResult::InvalidOrder);
 
             EXPECT_EQ(accounts.find_balance(1, 20), maker_balance);
             EXPECT_EQ(accounts.find_balance(2, 10), taker_quote);
@@ -1892,12 +1887,12 @@ namespace exchange {
             const auto first_reservation = reservations.find(659);
             const auto second_reservation = reservations.find(660);
 
-            EXPECT_THROW(
-                static_cast<void>(coordinator.submit_order(
+            EXPECT_EQ(
+                coordinator.submit_order(
                     OrderAdmissionRequest{
                         2,
-                        limit_order(661, Side::Buy, 100, 2)})),
-                std::overflow_error);
+                        limit_order(661, Side::Buy, 100, 2)}),
+                SubmitResult::InvalidOrder);
 
             EXPECT_EQ(accounts.find_balance(1, 20), maker_base);
             EXPECT_EQ(accounts.find_balance(1, 10), maker_quote);

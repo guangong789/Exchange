@@ -107,6 +107,9 @@ namespace exchange {
     }
 
     AccountStore& TradingRuntime::accounts() {
+        if (executor_.poisoned()) {
+            throw std::logic_error("account mutation on poisoned runtime is unsupported");
+        }
         if (bootstrap_sealed_ || executor_.durable_processing_started()) {
             throw std::logic_error(
                 "account bootstrap after durable recovery is unsupported");

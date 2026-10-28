@@ -25,6 +25,8 @@ namespace exchange {
 
     class AccountStore {
     public:
+        // Each asset balance is non-negative and available + reserved <=
+        // Amount::max(), so every legitimate reservation can be released.
         using AssetBalances = std::map<AssetId, Balance>;
         using AccountBalances = std::map<AccountId, AssetBalances>;
 
@@ -69,6 +71,11 @@ namespace exchange {
             Amount amount);
 
         void release(AccountId account_id, AssetId asset_id, Amount amount);
+
+        // Same checks as release(), without mutation. Callers must serialize
+        // this check with the subsequent release and other balance changes.
+        void validate_release(
+            AccountId account_id, AssetId asset_id, Amount amount) const;
 
         void consume_reserved(
             AccountId account_id,
