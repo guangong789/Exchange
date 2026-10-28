@@ -84,20 +84,30 @@ Previously reported paired measurements showed **21,204 → 51,550 commands/s (a
 
 ## Quick Start
 
-On Linux / WSL2, use a C++20 compiler, CMake 3.20+, and the nlohmann-json CMake package. Building tests also requires GoogleTest (downloaded through CMake FetchContent if unavailable); the script's default mode disables tests. The retained C++ evidence tools use nlohmann-json; the C++ build does not require libcurl, OpenSSL, or Boost.
+The default Linux / WSL2 build needs a C++20 compiler and CMake 3.20+. Building tests also requires GoogleTest (downloaded through CMake FetchContent if unavailable); the script's default mode disables tests. `EXCHANGE_BUILD_EVIDENCE` defaults to `OFF`: the default build does not discover or depend on nlohmann-json, and does not require libcurl, OpenSSL, or Boost.
 
 Without live models or external APIs, the [main demo](apps/exchange_runtime_demo/main.cpp) uses scripted actions and a real WAL to demonstrate trading, contract settlement, a process crash before response delivery, and exact recovery. Run from the repository root:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j4
-ctest --test-dir build --output-on-failure
-./build/exchange_runtime_demo
+cmake -S . -B build-core -DCMAKE_BUILD_TYPE=Release
+cmake --build build-core -j4
+ctest --test-dir build-core --output-on-failure
+./build-core/exchange_runtime_demo
 ```
 
-Alternatively, run `./quickstart.sh` to build and launch the demo, or `./quickstart.sh test` to run the full C++ test suite.
+Alternatively, run `./quickstart.sh` to build and launch the demo, or `./quickstart.sh test` to run the full core C++ test suite; the script explicitly disables Evidence.
 
-The main demo uses local scripts and calls no market-data or model API. Both C++ evidence applications are built with the default Linux targets and output structured JSON.
+The main demo uses local scripts and calls no market-data or model API. To build the C++ evidence tools on Linux / WSL2, install the nlohmann-json CMake package and enable them in a separate directory:
+
+```bash
+cmake -S . -B build-evidence -DCMAKE_BUILD_TYPE=Release -DEXCHANGE_BUILD_EVIDENCE=ON
+cmake --build build-evidence -j4
+ctest --test-dir build-evidence --output-on-failure
+./build-evidence/exchange_runtime_demo
+./build-evidence/exchange_diagnostic_evidence
+```
+
+This configuration adds both evidence libraries, the partial-fill and historical-order CLIs, and their specific tests; all core tests remain enabled. Process integration tests exercise the historical CLI against offline WALs. For applications only, also pass `-DEXCHANGE_BUILD_TESTS=OFF`; GoogleTest is then unnecessary.
 
 ## Scope and Limitations
 

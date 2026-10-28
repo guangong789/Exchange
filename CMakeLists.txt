@@ -4,6 +4,7 @@ project(crypto_exchange_simulator VERSION 1.0.0 LANGUAGES CXX)
 
 option(EXCHANGE_BUILD_TESTS "Build unit tests" ON)
 option(EXCHANGE_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
+option(EXCHANGE_BUILD_EVIDENCE "Build C++ evidence tools (Linux only)" OFF)
 find_package(Threads REQUIRED)
 
 add_library(exchange_core
@@ -120,7 +121,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_features(exchange_runtime_demo PRIVATE cxx_std_20)
     target_compile_options(exchange_runtime_demo
         PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
+if(EXCHANGE_BUILD_EVIDENCE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(nlohmann_json CONFIG REQUIRED)
     add_library(exchange_partial_fill_evidence
         src/diagnostics/partial_fill_evidence.cpp

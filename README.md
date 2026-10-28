@@ -84,20 +84,30 @@ WAL 接收也不等于业务成功：资金不足等交易拒绝可能发生在�
 
 ## 快速开始
 
-Linux / WSL2 需要 C++20 编译器、CMake 3.20+、nlohmann-json CMake package。构建测试时还需 GoogleTest（未安装时 CMake 通过 FetchContent 下载）；脚本默认模式关闭测试。nlohmann-json 用于保留的 C++ 证据工具；C++ 构建不需要 libcurl、OpenSSL 或 Boost。
+Linux / WSL2 的默认构建需要 C++20 编译器和 CMake 3.20+。构建测试时还需 GoogleTest（未安装时 CMake 通过 FetchContent 下载）；脚本默认模式关闭测试。`EXCHANGE_BUILD_EVIDENCE` 默认 `OFF`，默认构建不查找或依赖 nlohmann-json，也不需要 libcurl、OpenSSL 或 Boost。
 
 无需实时模型或外部 API，[主 demo](apps/exchange_runtime_demo/main.cpp)使用脚本动作和真实 WAL，展示交易、合约结算、响应交付前的进程崩溃与精确恢复。在仓库根目录运行：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j4
-ctest --test-dir build --output-on-failure
-./build/exchange_runtime_demo
+cmake -S . -B build-core -DCMAKE_BUILD_TYPE=Release
+cmake --build build-core -j4
+ctest --test-dir build-core --output-on-failure
+./build-core/exchange_runtime_demo
 ```
 
-也可运行 `./quickstart.sh` 构建并演示，或使用 `./quickstart.sh test` 运行完整 C++ 测试。
+也可运行 `./quickstart.sh` 构建并演示，或使用 `./quickstart.sh test` 运行完整核心 C++ 测试；脚本显式关闭 Evidence。
 
-主 demo 使用本地脚本，不调用行情或模型 API。两个 C++ 证据应用随 Linux 默认目标构建，输出结构化 JSON。
+主 demo 使用本地脚本，不调用行情或模型 API。需要 C++ 证据工具时，在 Linux / WSL2 安装 nlohmann-json CMake package，并在独立目录中显式开启：
+
+```bash
+cmake -S . -B build-evidence -DCMAKE_BUILD_TYPE=Release -DEXCHANGE_BUILD_EVIDENCE=ON
+cmake --build build-evidence -j4
+ctest --test-dir build-evidence --output-on-failure
+./build-evidence/exchange_runtime_demo
+./build-evidence/exchange_diagnostic_evidence
+```
+
+此配置增加两个证据库、partial-fill 与 historical-order CLI，以及专属测试；核心测试仍全部保留。历史 CLI 的离线 WAL 查询由进程集成测试覆盖。仅构建应用时可追加 `-DEXCHANGE_BUILD_TESTS=OFF`，不需要 GoogleTest。
 
 ## 范围与限制
 
